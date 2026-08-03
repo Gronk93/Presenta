@@ -4,6 +4,8 @@ import { PointerEvent, useCallback, useEffect, useRef, useState } from "react";
 
 type Mode = "home" | "pair" | "control" | "receiver";
 type LinkState = "idle" | "waiting" | "connecting" | "connected" | "offline";
+type BridgeState = "missing" | "detected" | "connected" | "error";
+type LocalRequestInit = RequestInit & { targetAddressSpace?: "loopback" };
 type RemoteMessage =
   | { type: "pointer"; x: number; y: number }
   | { type: "slide"; direction: 1 | -1 }
@@ -46,8 +48,12 @@ export default function Home() {
   const [installEvent, setInstallEvent] = useState<Event | null>(null);
   const [online, setOnline] = useState(true);
   const [toast, setToast] = useState("");
+  const [bridgeState, setBridgeState] = useState<BridgeState>("missing");
+  const [bridgeInput, setBridgeInput] = useState("");
+  const [showBridgeDialog, setShowBridgeDialog] = useState(false);
   const channelRef = useRef<RTCDataChannel | null>(null);
   const broadcastRef = useRef<BroadcastChannel | null>(null);
+  const bridgeCodeRef = useRef("");
   const pointerFrame = useRef<number | null>(null);
   const pendingPointer = useRef({ x: 0.58, y: 0.52 });
 
@@ -62,6 +68,11 @@ export default function Home() {
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
     window.addEventListener("beforeinstallprompt", onInstall);
+    const savedBridgeCode = window.localStorage.getItem("presenta.bridgeCode") ?? "";
+    if (/^\d{6}$/.test(savedBridgeCode)) {
+      bridgeCodeRef.current = savedBridgeCode;
+      setBridgeInput(savedBridgeCode);
+    }
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
     return () => {
       window.removeEventListener("online", onOnline);
@@ -76,6 +87,27 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const forwardToBridge = useCallback((message: RemoteMessage | { type: "ping" }) => {
+    const code = bridgeCodeRef.current;
+    if (!code) return Promise.resolve(false);
+    const options: LocalRequestInit = {
+      method: "POST",
+      mode: "cors",
+      targetAddressSpace: "loopback",
+      headers: { "content-type": "application/json", "X-Presenta-Code": code },
+      body: JSON.stringify(message),
+    };
+    return fetch("http://127.0.0.1:51794/command", options)
+      .then((response) => {
+        setBridgeState(response.ok ? "connected" : "error");
+        return response.ok;
+      })
+      .catch(() => {
+        setBridgeState("missing");
+        return false;
+      });
+  }, []);
+
   const receiveMessage = useCallback((message: RemoteMessage) => {
     if (message.type === "pointer") setPointer({ x: message.x, y: message.y });
     if (message.type === "slide") {
@@ -83,7 +115,31 @@ export default function Home() {
     }
     if (message.type === "laser") setLaser(message.active);
     if (message.type === "blackout") setBlackout(message.active);
-  }, []);
+    void forwardToBridge(message);
+  }, [forwardToBridge]);
+
+  useEffect(() => {
+    if (mode !== "receiver") return;
+    let stopped = false;
+    let timer: number | undefined;
+    const checkBridge = async () => {
+      try {
+        const options: LocalRequestInit = { method: "GET", mode: "cors", cache: "no-store", targetAddressSpace: "loopback" };
+        const response = await fetch("http://127.0.0.1:51794/health", options);
+        if (!stopped) {
+          if (!response.ok) setBridgeState("missing");
+          else if (bridgeCodeRef.current) await forwardToBridge({ type: "ping" });
+          else setBridgeState("detected");
+        }
+      } catch {
+        if (!stopped) setBridgeState("missing");
+      } finally {
+        if (!stopped) timer = window.setTimeout(checkBridge, 3000);
+      }
+    };
+    void checkBridge();
+    return () => { stopped = true; if (timer) window.clearTimeout(timer); };
+  }, [forwardToBridge, mode]);
 
   useEffect(() => {
     if (!room || (mode !== "control" && mode !== "receiver")) return;
@@ -268,6 +324,25 @@ export default function Home() {
     setToast("Código copiado");
   };
 
+  const connectBridge = async () => {
+    const code = bridgeInput.replace(/\D/g, "");
+    if (code.length !== 6) {
+      setToast("Escribe el código de seis dígitos del Bridge");
+      return;
+    }
+    bridgeCodeRef.current = code;
+    window.localStorage.setItem("presenta.bridgeCode", code);
+    const connected = await forwardToBridge({ type: "ping" });
+    if (connected) {
+      setShowBridgeDialog(false);
+      setToast("Presenta Bridge conectado");
+    } else {
+      setToast("No se encontró el Bridge o el código no coincide");
+    }
+  };
+
+  const bridgeLabel = bridgeState === "connected" ? "Bridge conectado" : bridgeState === "detected" ? "Bridge detectado" : bridgeState === "error" ? "Código incorrecto" : "Conectar Bridge";
+
   const slideCopy = SLIDE_COPY[(slide - 1) % SLIDE_COPY.length];
 
   return (
@@ -369,7 +444,11 @@ export default function Home() {
         <section className="receiver-view">
           <div className="receiver-toolbar">
             <div className="room-code-block"><span>CÓDIGO DE CONEXIÓN</span><button onClick={copyCode}>{formatCode(room)} <small>Copiar</small></button></div>
-            <div className="receiver-status"><span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span><span>Diapositiva {slide} de 24</span></div>
+            <div className="receiver-status">
+              <button className={`bridge-button bridge-${bridgeState}`} onClick={() => setShowBridgeDialog(true)}><i />{bridgeLabel}</button>
+              <span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span>
+              <span>Diapositiva {slide} de 24</span>
+            </div>
           </div>
           <div className={`presentation-canvas ${blackout ? "is-blackout" : ""}`}>
             <div className="deck-brand">PRESENTA / DEMO</div>
@@ -380,6 +459,29 @@ export default function Home() {
           </div>
           <p className="receiver-hint">Abre esta vista en pantalla completa. El complemento de Windows permitirá controlar PowerPoint y colocar este puntero sobre cualquier aplicación.</p>
         </section>
+      )}
+
+      {showBridgeDialog && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowBridgeDialog(false); }}>
+          <section className="bridge-dialog" role="dialog" aria-modal="true" aria-labelledby="bridge-title">
+            <button className="dialog-close" onClick={() => setShowBridgeDialog(false)} aria-label="Cerrar">×</button>
+            <span className="step-pill">WINDOWS · PRESENTA BRIDGE</span>
+            <h2 id="bridge-title">Conecta el complemento</h2>
+            <p>Abre Presenta Bridge en Windows y escribe el código que aparece en su ventana.</p>
+            <label htmlFor="bridge-code">Código del Bridge</label>
+            <input
+              id="bridge-code"
+              inputMode="numeric"
+              value={formatCode(bridgeInput)}
+              onChange={(event) => setBridgeInput(event.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="000 000"
+              autoFocus
+            />
+            <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
+            <a className="bridge-download" href="/downloads/PresentaBridge.exe" download>Descargar Presenta Bridge para Windows</a>
+            <small>El complemento sólo escucha en esta computadora y valida el código antes de ejecutar órdenes.</small>
+          </section>
+        </div>
       )}
 
       {toast && <div className="toast" role="status">{toast}</div>}

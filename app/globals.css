@@ -110,6 +110,14 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .room-code-block button { display: flex; align-items: baseline; gap: 12px; padding: 0; border: 0; background: none; font-family: var(--font-geist-mono), monospace; font-size: 2rem; font-weight: 700; letter-spacing: .09em; cursor: pointer; }
 .room-code-block small { color: var(--violet); font-family: var(--font-geist-sans); font-size: .72rem; letter-spacing: 0; }
 .receiver-status { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: .77rem; }
+.bridge-button { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.48); color: var(--muted); font-size: .74rem; cursor: pointer; }
+.bridge-button i { width: 8px; height: 8px; border-radius: 2px; background: #9b9b98; }
+.bridge-button.bridge-connected { color: var(--green); border-color: rgba(22,122,89,.3); background: rgba(22,122,89,.08); }
+.bridge-button.bridge-connected i { background: var(--green); box-shadow: 0 0 0 4px rgba(22,122,89,.1); }
+.bridge-button.bridge-detected { color: var(--violet-dark); border-color: rgba(103,87,217,.3); background: var(--violet-soft); }
+.bridge-button.bridge-detected i { background: var(--violet); }
+.bridge-button.bridge-error { color: #b94450; border-color: rgba(185,68,80,.3); }
+.bridge-button.bridge-error i { background: #b94450; }
 .presentation-canvas { position: relative; min-height: calc(100svh - 208px); overflow: hidden; border-radius: 22px; background: var(--white); border: 1px solid var(--line); box-shadow: 0 25px 60px rgba(39,32,74,.1); transition: background .25s; }
 .deck-brand { position: absolute; top: 7%; left: 6.5%; color: var(--violet); font-family: var(--font-geist-mono), monospace; font-size: .66rem; letter-spacing: .12em; }
 .deck-copy { position: absolute; left: 6.5%; top: 29%; width: 56%; }
@@ -127,6 +135,15 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .blackout-message { position: absolute; inset: 0; display: grid; place-items: center; color: #a8a9ad; font-size: .84rem; }
 .receiver-hint { margin: 11px 0 0; color: var(--muted); font-size: .72rem; text-align: center; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 20; max-width: calc(100% - 32px); padding: 12px 17px; border-radius: 999px; background: var(--ink); color: white; font-size: .82rem; box-shadow: 0 12px 28px rgba(0,0,0,.22); text-align: center; }
+.dialog-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 18px; background: rgba(23,28,37,.52); backdrop-filter: blur(7px); }
+.bridge-dialog { position: relative; width: min(100%, 480px); padding: clamp(28px, 5vw, 46px); border: 1px solid var(--line); border-radius: 26px; background: var(--paper); box-shadow: 0 30px 90px rgba(0,0,0,.28); }
+.bridge-dialog h2 { margin: 18px 0 10px; font-size: clamp(2rem, 7vw, 3.2rem); line-height: 1; letter-spacing: -.052em; }
+.bridge-dialog > p { margin: 0 0 27px; color: var(--muted); line-height: 1.5; }
+.bridge-dialog label { display: block; margin-bottom: 8px; font-size: .82rem; font-weight: 650; }
+.bridge-dialog input { width: 100%; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--white); color: var(--ink); font-family: var(--font-geist-mono), monospace; font-size: 1.6rem; letter-spacing: .12em; }
+.bridge-dialog > small { display: block; margin-top: 16px; color: var(--muted); line-height: 1.4; text-align: center; }
+.bridge-download { display: block; margin-top: 15px; color: var(--violet-dark); font-size: .84rem; font-weight: 650; text-align: center; text-underline-offset: 3px; }
+.dialog-close { position: absolute; top: 16px; right: 16px; width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 50%; background: rgba(255,255,255,.45); font-size: 1.3rem; cursor: pointer; }
 
 @media (max-width: 900px) {
   .home-view { grid-template-columns: 1fr; padding: 52px 0 100px; }
@@ -153,6 +170,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
   .controller-heading h1 { font-size: 1.2rem; }
   .receiver-toolbar { align-items: flex-start; }
   .receiver-status { flex-direction: column; align-items: flex-end; gap: 7px; }
+  .bridge-button { max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .room-code-block button { font-size: 1.45rem; }
   .presentation-canvas { min-height: calc(100svh - 180px); border-radius: 16px; }
   .deck-copy { width: 78%; top: 24%; }
