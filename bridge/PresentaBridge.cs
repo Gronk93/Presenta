@@ -254,8 +254,11 @@ namespace PresentaBridge
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private double pointerX = .5;
         private double pointerY = .5;
-        private bool laserActive = true;
+        private bool laserActive;
+        private bool pointerVisible;
         private bool blackoutActive;
+        private readonly System.Windows.Forms.Timer pointerIdleTimer;
+        private readonly System.Windows.Forms.Timer safetyTimer;
 
         public OverlayForm()
         {
@@ -266,6 +269,22 @@ namespace PresentaBridge
             TransparencyKey = Color.Fuchsia;
             DoubleBuffered = true;
             Cursor = Cursors.Default;
+            pointerIdleTimer = new System.Windows.Forms.Timer { Interval = 1800 };
+            pointerIdleTimer.Tick += delegate
+            {
+                pointerIdleTimer.Stop();
+                pointerVisible = false;
+                Invalidate();
+            };
+            safetyTimer = new System.Windows.Forms.Timer { Interval = 7000 };
+            safetyTimer.Tick += delegate
+            {
+                safetyTimer.Stop();
+                pointerVisible = false;
+                laserActive = false;
+                blackoutActive = false;
+                Invalidate();
+            };
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -295,19 +314,38 @@ namespace PresentaBridge
         {
             pointerX = Math.Max(0, Math.Min(1, x));
             pointerY = Math.Max(0, Math.Min(1, y));
-            RunOnUi(Invalidate);
+            RunOnUi(delegate
+            {
+                pointerVisible = laserActive;
+                pointerIdleTimer.Stop();
+                pointerIdleTimer.Start();
+                Invalidate();
+            });
         }
 
         public void SetLaser(bool active)
         {
             laserActive = active;
-            RunOnUi(Invalidate);
+            RunOnUi(delegate
+            {
+                if (!active) pointerVisible = false;
+                Invalidate();
+            });
         }
 
         public void SetBlackout(bool active)
         {
             blackoutActive = active;
             RunOnUi(Invalidate);
+        }
+
+        public void Touch()
+        {
+            RunOnUi(delegate
+            {
+                safetyTimer.Stop();
+                safetyTimer.Start();
+            });
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -327,7 +365,7 @@ namespace PresentaBridge
             }
 
             e.Graphics.Clear(Color.Fuchsia);
-            if (!laserActive) return;
+            if (!laserActive || !pointerVisible) return;
             float x = (float)(pointerX * ClientSize.Width);
             float y = (float)(pointerY * ClientSize.Height);
             using (var glow = new SolidBrush(Color.FromArgb(72, 237, 68, 88)))
@@ -428,7 +466,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.1.0\",\"ready\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.3.0\",\"ready\":true}");
                     return;
                 }
 
@@ -460,6 +498,7 @@ namespace PresentaBridge
 
         private void Execute(Dictionary<string, object> command)
         {
+            overlay.Touch();
             string type = command.ContainsKey("type") ? Convert.ToString(command["type"]) : "";
             if (type == "ping") return;
             if (type == "pointer")

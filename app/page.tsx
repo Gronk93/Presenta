@@ -42,7 +42,7 @@ export default function Home() {
   const [roomInput, setRoomInput] = useState("");
   const [linkState, setLinkState] = useState<LinkState>("idle");
   const [slide, setSlide] = useState(8);
-  const [laser, setLaser] = useState(true);
+  const [laser, setLaser] = useState(false);
   const [blackout, setBlackout] = useState(false);
   const [pointer, setPointer] = useState({ x: 0.58, y: 0.52 });
   const [installEvent, setInstallEvent] = useState<Event | null>(null);
@@ -334,6 +334,8 @@ export default function Home() {
     window.localStorage.setItem("presenta.bridgeCode", code);
     const connected = await forwardToBridge({ type: "ping" });
     if (connected) {
+      await forwardToBridge({ type: "laser", active: laser });
+      await forwardToBridge({ type: "blackout", active: blackout });
       setShowBridgeDialog(false);
       setToast("Presenta Bridge conectado");
     } else {
@@ -478,7 +480,7 @@ export default function Home() {
               autoFocus
             />
             <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
-            <a className="bridge-download" href="/downloads/PresentaBridge.exe" download>Descargar Presenta Bridge para Windows</a>
+            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe" download>Descargar instalador para Windows</a>
             <small>El complemento sólo escucha en esta computadora y valida el código antes de ejecutar órdenes.</small>
           </section>
         </div>

@@ -12,7 +12,7 @@ Presenta Bridge conecta la PWA con aplicaciones de escritorio. Recibe comandos �
 
 ## Uso
 
-1. Ejecuta `dist/PresentaBridge.exe` en Windows.
+1. Ejecuta `dist/PresentaBridgeSetup.exe` en Windows y selecciona **Instalar y abrir**.
 2. Selecciona la pantalla donde se proyectará la presentación.
 3. En la vista receptora de la PWA, selecciona **Conectar Bridge**.
 4. Escribe el código que muestra el ejecutable.
