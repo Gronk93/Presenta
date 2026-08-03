@@ -305,7 +305,7 @@ export default function Home() {
 
   const promptInstall = async () => {
     if (!installEvent) {
-      setToast("Abre el menú del navegador y elige “Instalar aplicación”");
+      setToast("Abre este enlace en Edge o Chrome y elige “Instalar aplicación”");
       return;
     }
     const prompt = installEvent as Event & { prompt: () => Promise<void> };
