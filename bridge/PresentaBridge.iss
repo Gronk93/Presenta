@@ -1,5 +1,5 @@
 #define MyAppName "Presenta Bridge"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.3.1"
 #define MyAppPublisher "Presenta"
 #define MyAppExeName "PresentaBridge.exe"
 
@@ -19,10 +19,9 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-CloseApplications=yes
+CloseApplications=no
 RestartApplications=no
 UninstallDisplayIcon={app}\{#MyAppExeName}
-AppMutex=Local\PresentaBridge
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Instalador de Presenta Bridge para Windows
@@ -45,3 +44,15 @@ Name: "{userstartup}\Presenta Bridge"; Filename: "{app}\{#MyAppExeName}"; Tasks:
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Abrir Presenta Bridge"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  { Presenta Bridge permanece en segundo plano. Lo cerramos antes de reemplazarlo. }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM PresentaBridge.exe /T /F',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(500);
+  Result := '';
+end;
