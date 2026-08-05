@@ -2,7 +2,7 @@
 
 import { PointerEvent, useCallback, useEffect, useRef, useState } from "react";
 
-type Mode = "loading" | "pair" | "control" | "receiver";
+type Mode = "loading" | "home" | "pair" | "control" | "receiver";
 type LinkState = "idle" | "waiting" | "connecting" | "connected" | "offline";
 type BridgeState = "missing" | "detected" | "connected" | "error";
 type LocalRequestInit = RequestInit & { targetAddressSpace?: "loopback" };
@@ -78,8 +78,7 @@ export default function Home() {
         setMode("pair");
       }
     } else {
-      setRoom(createRoomCode());
-      setMode("receiver");
+      setMode("home");
     }
 
     setOnline(navigator.onLine);
@@ -397,6 +396,20 @@ export default function Home() {
     setMode("control");
   };
 
+  const startPresentation = () => {
+    setRoom(createRoomCode());
+    setLinkState("idle");
+    setMode("receiver");
+  };
+
+  const returnToLanding = () => {
+    screenStream?.getTracks().forEach((track) => track.stop());
+    setScreenStream(null);
+    setRoom("");
+    setLinkState("idle");
+    setMode("home");
+  };
+
   const changeRoom = () => {
     window.localStorage.removeItem(ROOM_STORAGE);
     setRoom("");
@@ -505,6 +518,52 @@ export default function Home() {
 
   return (
     <main className={`app-shell mode-${mode}`}>
+      {mode === "home" && (
+        <section className="landing-view">
+          <header className="desktop-header landing-header">
+            <div className="brand"><span className="brand-mark" aria-hidden="true"><span /></span><span>Presenta</span></div>
+            <div className="landing-nav">
+              <span>Windows + Android</span>
+              <a href="/downloads/PresentaBridgeSetup.exe" download>Descargar Bridge</a>
+            </div>
+          </header>
+
+          <div className="landing-hero">
+            <div className="landing-copy">
+              <span className="eyebrow">CONTROL REMOTO PARA PRESENTACIONES</span>
+              <h1>Presenta con libertad.<br /><em>Tu celular lleva el control.</em></h1>
+              <p>Elige una pantalla o ventana en tu computadora, conecta Android con un código y controla diapositivas, puntero láser y pantalla negra desde cualquier lugar de la sala.</p>
+              <div className="landing-actions">
+                <button className="landing-primary" onClick={startPresentation}>Iniciar presentación <span>→</span></button>
+                <a href="/?remote=1">Abrir control del celular</a>
+              </div>
+              <div className="landing-trust"><span><i />Sin cables</span><span><i />Sin subir archivos</span><span><i />Reconexión automática</span></div>
+            </div>
+
+            <div className="landing-product" aria-label="Vista previa de Presenta">
+              <div className="product-window">
+                <div className="product-window-bar"><span /><span /><span /><b>Presenta</b><small>Conectado</small></div>
+                <div className="product-stage">
+                  <div className="product-slide"><small>PRESENTA / EN VIVO</small><strong>Tu idea,<br />en pantalla.</strong><i /></div>
+                  <div className="product-remote">
+                    <div><span>CONTROL ANDROID</span><b>847 291</b></div>
+                    <div className="remote-pad"><i /></div>
+                    <div className="remote-buttons"><span>←</span><strong>12</strong><span>→</span></div>
+                  </div>
+                </div>
+              </div>
+              <div className="landing-code-card"><span>CÓDIGO DE CONEXIÓN</span><strong>847 291</strong><small>Listo para Android</small></div>
+            </div>
+          </div>
+
+          <div className="landing-steps">
+            <article><span>01</span><div><strong>Elige qué presentar</strong><p>Una pantalla, una ventana de PowerPoint o una pestaña.</p></div></article>
+            <article><span>02</span><div><strong>Conecta el celular</strong><p>Escribe el código de seis dígitos en la PWA.</p></div></article>
+            <article><span>03</span><div><strong>Muévete con libertad</strong><p>Avanza, señala y recupera la conexión automáticamente.</p></div></article>
+          </div>
+        </section>
+      )}
+
       {mode === "pair" && (
         <section className="pair-view remote-only-view">
           <div className="remote-brand"><span className="brand-mark" aria-hidden="true"><span /></span><strong>Presenta</strong><small>Control Android</small></div>
@@ -553,7 +612,7 @@ export default function Home() {
         <section className="receiver-view">
           <header className="desktop-header">
             <div className="brand"><span className="brand-mark" aria-hidden="true"><span /></span><span>Presenta</span></div>
-            <span className={`network ${online ? "is-online" : ""}`}><i />{online ? "En línea" : "Sin red"}</span>
+            <div className="desktop-header-actions"><span className={`network ${online ? "is-online" : ""}`}><i />{online ? "En línea" : "Sin red"}</span><button className="quiet-button" onClick={returnToLanding}>Inicio</button></div>
           </header>
           <div className="receiver-toolbar">
             <div className="room-code-block"><span>CÓDIGO PARA EL CELULAR</span><button onClick={copyCode}>{formatCode(room)} <small>Copiar</small></button></div>
