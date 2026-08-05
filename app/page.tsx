@@ -2,7 +2,7 @@
 
 import { PointerEvent, useCallback, useEffect, useRef, useState } from "react";
 
-type Mode = "home" | "pair" | "control" | "receiver";
+type Mode = "loading" | "pair" | "control" | "receiver";
 type LinkState = "idle" | "waiting" | "connecting" | "connected" | "offline";
 type BridgeState = "missing" | "detected" | "connected" | "error";
 type LocalRequestInit = RequestInit & { targetAddressSpace?: "loopback" };
@@ -11,16 +11,17 @@ type RemoteMessage =
   | { type: "slide"; direction: 1 | -1 }
   | { type: "laser"; active: boolean }
   | { type: "blackout"; active: boolean };
+type PeerMessage = RemoteMessage | { type: "heartbeat"; sentAt: number } | { type: "heartbeat-ack"; sentAt: number };
+type SignalEnvelope = { connectionId: string; data: unknown };
 
-const SLIDE_COPY = [
-  ["LA IDEA", "Presenta sin quedarte junto a la laptop", "Tu teléfono se convierte en un control preciso y siempre disponible."],
-  ["EL CONTROL", "Desliza, señala y avanza", "Un panel táctil amplio mantiene toda la atención en tu mensaje."],
-  ["LA CONEXIÓN", "Sin cables y sin instalar en Android", "La PWA se enlaza mediante una sala privada entre ambos dispositivos."],
-  ["EL RESULTADO", "Una presentación más natural", "Controla el ritmo, enfatiza ideas y muévete con libertad."],
-];
+const ROOM_STORAGE = "presenta.remoteRoom";
 
 function createRoomCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function createConnectionId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function formatCode(value: string) {
@@ -30,34 +31,57 @@ function formatCode(value: string) {
 
 function statusLabel(state: LinkState) {
   if (state === "connected") return "Conectado";
-  if (state === "connecting") return "Conectando";
+  if (state === "connecting") return "Reconectando";
   if (state === "waiting") return "Esperando celular";
   if (state === "offline") return "Sin conexión";
   return "Listo";
 }
 
 export default function Home() {
-  const [mode, setMode] = useState<Mode>("home");
+  const [mode, setMode] = useState<Mode>("loading");
   const [room, setRoom] = useState("");
   const [roomInput, setRoomInput] = useState("");
   const [linkState, setLinkState] = useState<LinkState>("idle");
-  const [slide, setSlide] = useState(8);
+  const [slide, setSlide] = useState(1);
   const [laser, setLaser] = useState(false);
   const [blackout, setBlackout] = useState(false);
-  const [pointer, setPointer] = useState({ x: 0.58, y: 0.52 });
+  const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 });
   const [installEvent, setInstallEvent] = useState<Event | null>(null);
   const [online, setOnline] = useState(true);
   const [toast, setToast] = useState("");
   const [bridgeState, setBridgeState] = useState<BridgeState>("missing");
   const [bridgeInput, setBridgeInput] = useState("");
   const [showBridgeDialog, setShowBridgeDialog] = useState(false);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const [connectionRevision, setConnectionRevision] = useState(0);
   const channelRef = useRef<RTCDataChannel | null>(null);
   const broadcastRef = useRef<BroadcastChannel | null>(null);
   const bridgeCodeRef = useRef("");
   const pointerFrame = useRef<number | null>(null);
-  const pendingPointer = useRef({ x: 0.58, y: 0.52 });
+  const pendingPointer = useRef({ x: 0.5, y: 0.5 });
+  const reconnectTimerRef = useRef<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const presentationRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const remoteRequested = new URL(window.location.href).searchParams.get("remote") === "1";
+    const installed = window.matchMedia("(display-mode: standalone)").matches;
+    const remoteDevice = isAndroid || remoteRequested || (installed && navigator.maxTouchPoints > 0);
+    if (remoteDevice) {
+      const savedRoom = window.localStorage.getItem(ROOM_STORAGE) ?? "";
+      if (/^\d{6}$/.test(savedRoom)) {
+        setRoom(savedRoom);
+        setRoomInput(savedRoom);
+        setMode("control");
+      } else {
+        setMode("pair");
+      }
+    } else {
+      setRoom(createRoomCode());
+      setMode("receiver");
+    }
+
     setOnline(navigator.onLine);
     const onOnline = () => setOnline(true);
     const onOffline = () => setOnline(false);
@@ -73,19 +97,32 @@ export default function Home() {
       bridgeCodeRef.current = savedBridgeCode;
       setBridgeInput(savedBridgeCode);
     }
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
+    if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/sw.js");
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
       window.removeEventListener("beforeinstallprompt", onInstall);
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(""), 2600);
+    const timer = window.setTimeout(() => setToast(""), 2800);
     return () => window.clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = screenStream;
+  }, [screenStream]);
+
+  const scheduleReconnect = useCallback((delay = 700) => {
+    if (reconnectTimerRef.current) return;
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      setConnectionRevision((current) => current + 1);
+    }, delay);
+  }, []);
 
   const forwardToBridge = useCallback((message: RemoteMessage | { type: "ping" }) => {
     const code = bridgeCodeRef.current;
@@ -110,9 +147,7 @@ export default function Home() {
 
   const receiveMessage = useCallback((message: RemoteMessage) => {
     if (message.type === "pointer") setPointer({ x: message.x, y: message.y });
-    if (message.type === "slide") {
-      setSlide((current) => Math.max(1, Math.min(24, current + message.direction)));
-    }
+    if (message.type === "slide") setSlide((current) => Math.max(1, current + message.direction));
     if (message.type === "laser") setLaser(message.active);
     if (message.type === "blackout") setBlackout(message.active);
     void forwardToBridge(message);
@@ -146,54 +181,125 @@ export default function Home() {
     let stopped = false;
     let lastSignalId = 0;
     let pollTimer: number | undefined;
+    let heartbeatTimer: number | undefined;
+    let lastHeartbeatAck = Date.now();
+    let activeConnectionId = "";
+    let pc: RTCPeerConnection | null = null;
+    let pendingCandidates: RTCIceCandidateInit[] = [];
     const role = mode === "receiver" ? "receiver" : "controller";
-    const pc = new RTCPeerConnection({ iceServers: [] });
-    const pendingCandidates: RTCIceCandidateInit[] = [];
-
     const broadcast = new BroadcastChannel(`presenta-${room}`);
     broadcastRef.current = broadcast;
     broadcast.onmessage = (event) => receiveMessage(event.data as RemoteMessage);
 
-    const prepareChannel = (channel: RTCDataChannel) => {
-      channelRef.current = channel;
-      channel.onopen = () => setLinkState("connected");
-      channel.onclose = () => setLinkState("offline");
-      channel.onmessage = (event) => {
-        try { receiveMessage(JSON.parse(event.data) as RemoteMessage); } catch { /* Ignore malformed peer data. */ }
-      };
-    };
-
-    const postSignal = async (kind: string, payload: unknown) => {
+    const postSignal = async (kind: "offer" | "answer" | "candidate" | "restart", data: unknown, connectionId = activeConnectionId) => {
       try {
         await fetch("/api/signal", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ room, role, kind, payload }),
+          body: JSON.stringify({ room, role, kind, payload: { connectionId, data } satisfies SignalEnvelope }),
         });
       } catch {
         if (!stopped) setLinkState("offline");
       }
     };
 
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "connected") setLinkState("connected");
-      if (["failed", "disconnected", "closed"].includes(pc.connectionState)) setLinkState("offline");
+    const prepareChannel = (channel: RTCDataChannel) => {
+      channelRef.current = channel;
+      channel.onopen = () => {
+        lastHeartbeatAck = Date.now();
+        setLinkState("connected");
+      };
+      channel.onclose = () => {
+        if (stopped) return;
+        setLinkState("connecting");
+        if (role === "receiver") scheduleReconnect(900);
+        else void postSignal("restart", { reason: "channel-closed" }, createConnectionId());
+      };
+      channel.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data) as PeerMessage;
+          if (message.type === "heartbeat") {
+            if (channel.readyState === "open") channel.send(JSON.stringify({ type: "heartbeat-ack", sentAt: message.sentAt } satisfies PeerMessage));
+          } else if (message.type === "heartbeat-ack") {
+            lastHeartbeatAck = Date.now();
+          } else {
+            receiveMessage(message);
+          }
+        } catch { /* Ignora datos incompletos durante una reconexión. */ }
+      };
     };
-    pc.onicecandidate = (event) => {
-      if (event.candidate) void postSignal("candidate", event.candidate.toJSON());
-    };
-    pc.ondatachannel = (event) => prepareChannel(event.channel);
 
-    const applyCandidate = async (candidate: RTCIceCandidateInit) => {
-      if (!pc.remoteDescription) {
-        pendingCandidates.push(candidate);
+    const createPeer = () => {
+      pc?.close();
+      const peer = new RTCPeerConnection({ iceServers: [] });
+      pc = peer;
+      pendingCandidates = [];
+      peer.onconnectionstatechange = () => {
+        if (peer.connectionState === "connected") setLinkState("connected");
+        if (["failed", "closed"].includes(peer.connectionState)) {
+          setLinkState("connecting");
+          if (role === "receiver") scheduleReconnect(900);
+        }
+        if (peer.connectionState === "disconnected") {
+          setLinkState("connecting");
+          if (role === "receiver") scheduleReconnect(2200);
+        }
+      };
+      peer.onicecandidate = (event) => {
+        if (event.candidate) void postSignal("candidate", event.candidate.toJSON());
+      };
+      peer.ondatachannel = (event) => prepareChannel(event.channel);
+      return peer;
+    };
+
+    const flushCandidates = async (peer: RTCPeerConnection) => {
+      while (pendingCandidates.length && peer.remoteDescription) {
+        const candidate = pendingCandidates.shift();
+        if (candidate) await peer.addIceCandidate(candidate).catch(() => undefined);
+      }
+    };
+
+    const startReceiver = async () => {
+      setLinkState("waiting");
+      await fetch(`/api/signal?room=${room}&role=receiver`, { method: "DELETE" }).catch(() => undefined);
+      if (stopped) return;
+      activeConnectionId = createConnectionId();
+      const peer = createPeer();
+      const channel = peer.createDataChannel("presenta", { ordered: false, maxRetransmits: 1 });
+      prepareChannel(channel);
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await postSignal("offer", peer.localDescription);
+    };
+
+    const handleSignal = async (signal: { id: number; kind: string; payload: string }) => {
+      const envelope = JSON.parse(signal.payload) as SignalEnvelope;
+      if (!envelope?.connectionId) return;
+      if (signal.kind === "restart" && role === "receiver") {
+        scheduleReconnect(120);
         return;
       }
-      await pc.addIceCandidate(candidate);
-    };
-
-    const flushCandidates = async () => {
-      while (pendingCandidates.length) await pc.addIceCandidate(pendingCandidates.shift()!);
+      if (signal.kind === "offer" && role === "controller") {
+        if (envelope.connectionId === activeConnectionId && pc?.remoteDescription) return;
+        activeConnectionId = envelope.connectionId;
+        setLinkState("connecting");
+        const peer = createPeer();
+        await peer.setRemoteDescription(envelope.data as RTCSessionDescriptionInit);
+        await flushCandidates(peer);
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        await postSignal("answer", peer.localDescription);
+        return;
+      }
+      if (envelope.connectionId !== activeConnectionId) return;
+      if (signal.kind === "answer" && role === "receiver" && pc && !pc.remoteDescription) {
+        await pc.setRemoteDescription(envelope.data as RTCSessionDescriptionInit);
+        await flushCandidates(pc);
+      } else if (signal.kind === "candidate" && pc) {
+        const candidate = envelope.data as RTCIceCandidateInit;
+        if (!pc.remoteDescription) pendingCandidates.push(candidate);
+        else await pc.addIceCandidate(candidate).catch(() => undefined);
+      }
     };
 
     const poll = async () => {
@@ -203,62 +309,82 @@ export default function Home() {
           const data = await response.json() as { signals: Array<{ id: number; kind: string; payload: string }> };
           for (const signal of data.signals) {
             lastSignalId = Math.max(lastSignalId, signal.id);
-            const payload = JSON.parse(signal.payload);
-            if (signal.kind === "offer" && role === "controller" && !pc.remoteDescription) {
-              setLinkState("connecting");
-              await pc.setRemoteDescription(payload as RTCSessionDescriptionInit);
-              await flushCandidates();
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              await postSignal("answer", pc.localDescription);
-            } else if (signal.kind === "answer" && role === "receiver" && !pc.remoteDescription) {
-              await pc.setRemoteDescription(payload as RTCSessionDescriptionInit);
-              await flushCandidates();
-            } else if (signal.kind === "candidate") {
-              await applyCandidate(payload as RTCIceCandidateInit);
-            }
+            await handleSignal(signal);
           }
         }
       } catch {
-        if (!stopped && !navigator.onLine) setLinkState("offline");
+        if (!stopped) setLinkState("offline");
       } finally {
-        if (!stopped) pollTimer = window.setTimeout(poll, 850);
+        if (!stopped) pollTimer = window.setTimeout(poll, 750);
       }
     };
 
     const start = async () => {
-      setLinkState(role === "receiver" ? "waiting" : "connecting");
-      if (role === "receiver") {
-        const dataChannel = pc.createDataChannel("presenta", { ordered: false, maxRetransmits: 1 });
-        prepareChannel(dataChannel);
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await postSignal("offer", pc.localDescription);
+      if (role === "receiver") await startReceiver();
+      else {
+        setLinkState("connecting");
+        await postSignal("restart", { reason: "controller-ready" }, createConnectionId());
       }
       await poll();
+      if (role === "controller") {
+        heartbeatTimer = window.setInterval(() => {
+          const channel = channelRef.current;
+          if (channel?.readyState === "open") {
+            if (Date.now() - lastHeartbeatAck > 12000) {
+              setLinkState("connecting");
+              void postSignal("restart", { reason: "heartbeat-timeout" }, createConnectionId());
+              lastHeartbeatAck = Date.now();
+            } else {
+              channel.send(JSON.stringify({ type: "heartbeat", sentAt: Date.now() } satisfies PeerMessage));
+            }
+          }
+        }, 4000);
+      }
     };
     void start();
 
     return () => {
       stopped = true;
       if (pollTimer) window.clearTimeout(pollTimer);
+      if (heartbeatTimer) window.clearInterval(heartbeatTimer);
       broadcast.close();
-      pc.close();
-      channelRef.current = null;
+      pc?.close();
+      if (channelRef.current) channelRef.current = null;
       broadcastRef.current = null;
     };
-  }, [mode, receiveMessage, room]);
+  }, [connectionRevision, mode, receiveMessage, room, scheduleReconnect]);
+
+  useEffect(() => {
+    if (mode !== "control" || !room) return;
+    const wake = () => {
+      if (document.visibilityState !== "visible" || channelRef.current?.readyState === "open") return;
+      setLinkState("connecting");
+      void fetch("/api/signal", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          room,
+          role: "controller",
+          kind: "restart",
+          payload: { connectionId: createConnectionId(), data: { reason: "phone-resumed" } },
+        }),
+      });
+    };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
+    return () => {
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("pageshow", wake);
+    };
+  }, [mode, room]);
 
   const sendRemote = useCallback((message: RemoteMessage) => {
-    const encoded = JSON.stringify(message);
-    if (channelRef.current?.readyState === "open") channelRef.current.send(encoded);
+    if (channelRef.current?.readyState === "open") channelRef.current.send(JSON.stringify(message));
+    else setLinkState("connecting");
     broadcastRef.current?.postMessage(message);
   }, []);
-
-  const chooseReceiver = () => {
-    setRoom(createRoomCode());
-    setMode("receiver");
-  };
 
   const joinRoom = () => {
     const normalized = roomInput.replace(/\D/g, "");
@@ -266,12 +392,21 @@ export default function Home() {
       setToast("Escribe los seis números de la sala");
       return;
     }
+    window.localStorage.setItem(ROOM_STORAGE, normalized);
     setRoom(normalized);
     setMode("control");
   };
 
+  const changeRoom = () => {
+    window.localStorage.removeItem(ROOM_STORAGE);
+    setRoom("");
+    setRoomInput("");
+    setLinkState("idle");
+    setMode("pair");
+  };
+
   const changeSlide = (direction: 1 | -1) => {
-    setSlide((current) => Math.max(1, Math.min(24, current + direction)));
+    setSlide((current) => Math.max(1, current + direction));
     sendRemote({ type: "slide", direction });
     if (navigator.vibrate) navigator.vibrate(35);
   };
@@ -305,7 +440,7 @@ export default function Home() {
 
   const promptInstall = async () => {
     if (!installEvent) {
-      setToast("Abre este enlace en Edge o Chrome y elige “Instalar aplicación”");
+      setToast("En Chrome, abre el menú y elige ‘Instalar aplicación’");
       return;
     }
     const prompt = installEvent as Event & { prompt: () => Promise<void> };
@@ -313,15 +448,36 @@ export default function Home() {
     setInstallEvent(null);
   };
 
-  const goHome = () => {
-    setMode("home");
-    setRoom("");
-    setLinkState("idle");
-  };
-
   const copyCode = async () => {
     await navigator.clipboard?.writeText(room);
     setToast("Código copiado");
+  };
+
+  const startScreenShare = async () => {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setToast("Este navegador no permite elegir una pantalla");
+      return;
+    }
+    try {
+      screenStream?.getTracks().forEach((track) => track.stop());
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 60 } }, audio: false });
+      const track = stream.getVideoTracks()[0];
+      if (track) track.addEventListener("ended", () => setScreenStream(null), { once: true });
+      setScreenStream(stream);
+      setToast("Pantalla lista para presentar");
+    } catch {
+      setToast("No se seleccionó ninguna pantalla");
+    }
+  };
+
+  const stopScreenShare = () => {
+    screenStream?.getTracks().forEach((track) => track.stop());
+    setScreenStream(null);
+  };
+
+  const enterFullscreen = async () => {
+    if (!presentationRef.current) return;
+    await presentationRef.current.requestFullscreen?.();
   };
 
   const connectBridge = async () => {
@@ -345,81 +501,30 @@ export default function Home() {
 
   const bridgeLabel = bridgeState === "connected" ? "Bridge conectado" : bridgeState === "detected" ? "Bridge detectado" : bridgeState === "error" ? "Código incorrecto" : "Conectar Bridge";
 
-  const slideCopy = SLIDE_COPY[(slide - 1) % SLIDE_COPY.length];
+  if (mode === "loading") return <main className="app-shell mode-loading"><div className="brand-mark" aria-hidden="true"><span /></div></main>;
 
   return (
     <main className={`app-shell mode-${mode}`}>
-      <header className="topbar">
-        <button className="brand" onClick={goHome} aria-label="Ir al inicio de Presenta">
-          <span className="brand-mark" aria-hidden="true"><span /></span>
-          <span>Presenta</span>
-        </button>
-        <div className="top-actions">
-          <span className={`network ${online ? "is-online" : ""}`}><i />{online ? "En línea" : "Sin red"}</span>
-          {mode === "home" && <button className="quiet-button" onClick={promptInstall}>Instalar PWA</button>}
-          {mode !== "home" && <button className="quiet-button" onClick={goHome}>Salir</button>}
-        </div>
-      </header>
-
-      {mode === "home" && (
-        <section className="home-view">
-          <div className="hero-copy">
-            <span className="eyebrow">CONTROL REMOTO PARA PRESENTACIONES</span>
-            <h1>Tu presentación.<br /><em>En la palma de tu mano.</em></h1>
-            <p>Conecta Android y Windows desde el navegador. Avanza diapositivas, mueve el puntero y mantén la atención donde importa.</p>
-          </div>
-
-          <div className="mode-grid" aria-label="Elige cómo usar este dispositivo">
-            <button className="mode-card receiver-card" onClick={chooseReceiver}>
-              <span className="mode-number">01</span>
-              <span className="device-illustration laptop-shape" aria-hidden="true"><i /><b /></span>
-              <span className="mode-copy"><strong>Recibir presentación</strong><small>Para tu laptop con Windows</small></span>
-              <span className="mode-arrow">→</span>
-            </button>
-            <button className="mode-card control-card" onClick={() => setMode("pair")}>
-              <span className="mode-number">02</span>
-              <span className="device-illustration phone-shape" aria-hidden="true"><i /></span>
-              <span className="mode-copy"><strong>Usar como control</strong><small>Para tu teléfono Android</small></span>
-              <span className="mode-arrow">→</span>
-            </button>
-          </div>
-
-          <div className="compatibility-strip">
-            <span><i className="check">✓</i> Instalable</span>
-            <span><i className="check">✓</i> Sin cable</span>
-            <span><i className="check">✓</i> Sin cuenta</span>
-            <span className="bridge-note">PowerPoint de escritorio requiere Presenta Bridge para Windows</span>
-          </div>
-        </section>
-      )}
-
       {mode === "pair" && (
-        <section className="pair-view">
-          <button className="back-link" onClick={goHome}>← Volver</button>
+        <section className="pair-view remote-only-view">
+          <div className="remote-brand"><span className="brand-mark" aria-hidden="true"><span /></span><strong>Presenta</strong><small>Control Android</small></div>
           <div className="pair-panel">
-            <span className="step-pill">ANDROID · PASO 1 DE 1</span>
-            <h1>Conecta con la laptop</h1>
-            <p>Escribe el código que aparece en la pantalla de Windows.</p>
+            <span className="step-pill">CONECTAR CON WINDOWS</span>
+            <h1>Escribe el código de la laptop</h1>
+            <p>La computadora mostrará seis números. Este teléfono recordará la sala para la próxima vez.</p>
             <label htmlFor="room-code">Código de seis dígitos</label>
-            <input
-              id="room-code"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              value={formatCode(roomInput)}
-              onChange={(event) => setRoomInput(event.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="000 000"
-              autoFocus
-            />
-            <button className="primary-button" onClick={joinRoom}>Conectar ahora <span>→</span></button>
-            <small>La sala sólo transmite órdenes de control. No sube tu presentación.</small>
+            <input id="room-code" inputMode="numeric" autoComplete="one-time-code" value={formatCode(roomInput)} onChange={(event) => setRoomInput(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="000 000" autoFocus />
+            <button className="primary-button" onClick={joinRoom}>Abrir control <span>→</span></button>
+            <button className="install-control" onClick={promptInstall}>Instalar este control en el celular</button>
+            <small>No se envía el contenido de tu presentación al servidor.</small>
           </div>
         </section>
       )}
 
       {mode === "control" && (
-        <section className="controller-view">
+        <section className="controller-view remote-only-view">
           <div className="controller-heading">
-            <div><span className="eyebrow">CONTROL ANDROID</span><h1>Sala {formatCode(room)}</h1></div>
+            <div><span className="eyebrow">PRESENTA · CONTROL</span><h1>Sala {formatCode(room)}</h1></div>
             <span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span>
           </div>
 
@@ -436,30 +541,49 @@ export default function Home() {
 
           <div className="slide-controls">
             <button onClick={() => changeSlide(-1)} aria-label="Diapositiva anterior">←</button>
-            <div><strong>{slide}</strong><span>de 24</span></div>
+            <div><strong>{slide}</strong><span>diapositiva</span></div>
             <button className="next-button" onClick={() => changeSlide(1)} aria-label="Diapositiva siguiente">→</button>
           </div>
+          <button className="change-room" onClick={changeRoom}>Cambiar código de conexión</button>
+          {linkState !== "connected" && <p className="reconnect-note">Puedes bloquear el teléfono. Al volver, Presenta intentará reconectarse automáticamente.</p>}
         </section>
       )}
 
       {mode === "receiver" && (
         <section className="receiver-view">
+          <header className="desktop-header">
+            <div className="brand"><span className="brand-mark" aria-hidden="true"><span /></span><span>Presenta</span></div>
+            <span className={`network ${online ? "is-online" : ""}`}><i />{online ? "En línea" : "Sin red"}</span>
+          </header>
           <div className="receiver-toolbar">
-            <div className="room-code-block"><span>CÓDIGO DE CONEXIÓN</span><button onClick={copyCode}>{formatCode(room)} <small>Copiar</small></button></div>
+            <div className="room-code-block"><span>CÓDIGO PARA EL CELULAR</span><button onClick={copyCode}>{formatCode(room)} <small>Copiar</small></button></div>
             <div className="receiver-status">
               <button className={`bridge-button bridge-${bridgeState}`} onClick={() => setShowBridgeDialog(true)}><i />{bridgeLabel}</button>
               <span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span>
-              <span>Diapositiva {slide} de 24</span>
             </div>
           </div>
-          <div className={`presentation-canvas ${blackout ? "is-blackout" : ""}`}>
-            <div className="deck-brand">PRESENTA / DEMO</div>
-            <div className="deck-copy"><span>{slideCopy[0]}</span><h1>{slideCopy[1]}</h1><p>{slideCopy[2]}</p></div>
-            <div className="deck-visual" aria-hidden="true"><span /><span /><span /></div>
+
+          <div className="screen-share-controls">
+            <button className="share-button" onClick={startScreenShare}>{screenStream ? "Cambiar pantalla" : "Elegir pantalla o ventana"}</button>
+            {screenStream && <button onClick={enterFullscreen}>Presentar en pantalla completa</button>}
+            {screenStream && <button className="stop-share" onClick={stopScreenShare}>Dejar de compartir</button>}
+          </div>
+
+          <div ref={presentationRef} className={`presentation-canvas ${screenStream ? "has-share" : ""} ${blackout ? "is-blackout" : ""}`}>
+            {screenStream ? (
+              <video ref={videoRef} className="shared-screen" autoPlay muted playsInline />
+            ) : (
+              <div className="presentation-empty">
+                <span className="empty-screen-icon" aria-hidden="true" />
+                <h1>Elige lo que deseas presentar</h1>
+                <p>Selecciona una pantalla completa, una ventana de PowerPoint o una pestaña del navegador.</p>
+                <button className="primary-button" onClick={startScreenShare}>Elegir ahora <span>→</span></button>
+              </div>
+            )}
             <div className={`laser-pointer ${laser ? "" : "is-hidden"}`} style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }} />
             {blackout && <div className="blackout-message">Pantalla en pausa</div>}
           </div>
-          <p className="receiver-hint">Abre esta vista en pantalla completa. El complemento de Windows permitirá controlar PowerPoint y colocar este puntero sobre cualquier aplicación.</p>
+          <p className="receiver-hint">Mantén esta vista abierta. Presenta restablece automáticamente el enlace cuando el celular vuelve a estar disponible.</p>
         </section>
       )}
 
@@ -471,14 +595,7 @@ export default function Home() {
             <h2 id="bridge-title">Conecta el complemento</h2>
             <p>Abre Presenta Bridge en Windows y escribe el código que aparece en su ventana.</p>
             <label htmlFor="bridge-code">Código del Bridge</label>
-            <input
-              id="bridge-code"
-              inputMode="numeric"
-              value={formatCode(bridgeInput)}
-              onChange={(event) => setBridgeInput(event.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="000 000"
-              autoFocus
-            />
+            <input id="bridge-code" inputMode="numeric" value={formatCode(bridgeInput)} onChange={(event) => setBridgeInput(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="000 000" autoFocus />
             <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
             <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe" download>Descargar instalador para Windows</a>
             <small>El complemento sólo escucha en esta computadora y valida el código antes de ejecutar órdenes.</small>

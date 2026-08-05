@@ -12,7 +12,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
   const title = "Presenta — Control remoto para presentaciones";
-  const description = "Convierte tu teléfono Android en un control remoto para presentaciones en Windows.";
+  const description = "Convierte tu teléfono Android en un control remoto y elige qué pantalla presentar desde Windows.";
   return {
     title,
     description,

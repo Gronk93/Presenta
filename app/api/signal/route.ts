@@ -1,7 +1,7 @@
-import { addSignal, listSignals } from "../../../db/signals";
+import { addSignal, clearSignals, listSignals } from "../../../db/signals";
 
 const ROLES = new Set(["receiver", "controller"]);
-const KINDS = new Set(["offer", "answer", "candidate"]);
+const KINDS = new Set(["offer", "answer", "candidate", "restart"]);
 
 function validRoom(value: string) {
   return /^\d{6}$/.test(value);
@@ -38,5 +38,20 @@ export async function POST(request: Request) {
     return Response.json({ ok: true }, { status: 201 });
   } catch {
     return Response.json({ error: "Unable to write signal" }, { status: 503 });
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const url = new URL(request.url);
+    const room = url.searchParams.get("room") ?? "";
+    const role = url.searchParams.get("role") ?? "";
+    if (!validRoom(room) || role !== "receiver") {
+      return Response.json({ error: "Invalid reset request" }, { status: 400 });
+    }
+    await clearSignals(room);
+    return Response.json({ ok: true });
+  } catch {
+    return Response.json({ error: "Unable to reset signals" }, { status: 503 });
   }
 }

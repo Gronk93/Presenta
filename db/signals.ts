@@ -34,6 +34,11 @@ export async function addSignal(room: string, role: string, kind: string, payloa
   ]);
 }
 
+export async function clearSignals(room: string) {
+  await ensureSchema();
+  await env.DB.prepare("DELETE FROM signals WHERE room = ?").bind(room).run();
+}
+
 export async function listSignals(room: string, otherRole: string, after: number) {
   await ensureSchema();
   const result = await env.DB.prepare(

@@ -3,7 +3,7 @@
   "short_name": "Presenta",
   "description": "Control remoto para presentaciones desde Android y Windows.",
   "id": "/",
-  "start_url": "/",
+  "start_url": "/?remote=1",
   "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],
