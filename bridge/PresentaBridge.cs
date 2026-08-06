@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
@@ -254,10 +255,15 @@ namespace PresentaBridge
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private double pointerX = .5;
         private double pointerY = .5;
+        private double targetPointerX = .5;
+        private double targetPointerY = .5;
+        private double pointerVelocityX;
+        private double pointerVelocityY;
         private bool laserActive;
         private bool pointerVisible;
         private bool blackoutActive;
         private readonly System.Windows.Forms.Timer pointerIdleTimer;
+        private readonly System.Windows.Forms.Timer pointerMotionTimer;
         private readonly System.Windows.Forms.Timer safetyTimer;
 
         public OverlayForm()
@@ -274,6 +280,26 @@ namespace PresentaBridge
             {
                 pointerIdleTimer.Stop();
                 pointerVisible = false;
+                Invalidate();
+            };
+            pointerMotionTimer = new System.Windows.Forms.Timer { Interval = 16 };
+            pointerMotionTimer.Tick += delegate
+            {
+                double distanceX = targetPointerX - pointerX;
+                double distanceY = targetPointerY - pointerY;
+                pointerVelocityX = pointerVelocityX * .54 + distanceX * .25;
+                pointerVelocityY = pointerVelocityY * .54 + distanceY * .25;
+                pointerX = Math.Max(0, Math.Min(1, pointerX + pointerVelocityX));
+                pointerY = Math.Max(0, Math.Min(1, pointerY + pointerVelocityY));
+                if (Math.Abs(distanceX) < .00035 && Math.Abs(distanceY) < .00035
+                    && Math.Abs(pointerVelocityX) < .00025 && Math.Abs(pointerVelocityY) < .00025)
+                {
+                    pointerX = targetPointerX;
+                    pointerY = targetPointerY;
+                    pointerVelocityX = 0;
+                    pointerVelocityY = 0;
+                    pointerMotionTimer.Stop();
+                }
                 Invalidate();
             };
             safetyTimer = new System.Windows.Forms.Timer { Interval = 7000 };
@@ -312,15 +338,30 @@ namespace PresentaBridge
 
         public void SetPointer(double x, double y)
         {
-            pointerX = Math.Max(0, Math.Min(1, x));
-            pointerY = Math.Max(0, Math.Min(1, y));
             RunOnUi(delegate
             {
-                pointerVisible = laserActive;
-                pointerIdleTimer.Stop();
-                pointerIdleTimer.Start();
-                Invalidate();
+                targetPointerX = Math.Max(0, Math.Min(1, x));
+                targetPointerY = Math.Max(0, Math.Min(1, y));
+                BeginPointerMotion();
             });
+        }
+
+        public void MovePointer(double dx, double dy)
+        {
+            RunOnUi(delegate
+            {
+                targetPointerX = Math.Max(0, Math.Min(1, targetPointerX + dx));
+                targetPointerY = Math.Max(0, Math.Min(1, targetPointerY + dy));
+                BeginPointerMotion();
+            });
+        }
+
+        private void BeginPointerMotion()
+        {
+            pointerVisible = laserActive;
+            pointerIdleTimer.Stop();
+            pointerIdleTimer.Start();
+            if (!pointerMotionTimer.Enabled) pointerMotionTimer.Start();
         }
 
         public void SetLaser(bool active)
@@ -466,7 +507,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.3.1\",\"ready\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.4.0\",\"ready\":true}");
                     return;
                 }
 
@@ -503,7 +544,11 @@ namespace PresentaBridge
             if (type == "ping") return;
             if (type == "pointer")
             {
-                overlay.SetPointer(Convert.ToDouble(command["x"]), Convert.ToDouble(command["y"]));
+                bool relative = command.ContainsKey("relative") && Convert.ToBoolean(command["relative"]);
+                if (relative && command.ContainsKey("dx") && command.ContainsKey("dy"))
+                    overlay.MovePointer(Convert.ToDouble(command["dx"]), Convert.ToDouble(command["dy"]));
+                else
+                    overlay.SetPointer(Convert.ToDouble(command["x"]), Convert.ToDouble(command["y"]));
                 return;
             }
             if (type == "laser")
@@ -520,6 +565,14 @@ namespace PresentaBridge
             {
                 int direction = Convert.ToInt32(command["direction"]);
                 Keyboard.Send(direction >= 0 ? Keyboard.VK_RIGHT : Keyboard.VK_LEFT);
+                return;
+            }
+            if (type == "presentation")
+            {
+                string action = command.ContainsKey("action") ? Convert.ToString(command["action"]) : "";
+                if (action == "start") Keyboard.ControlPowerPoint(true);
+                else if (action == "stop") Keyboard.ControlPowerPoint(false);
+                else throw new InvalidOperationException("Unknown presentation action");
                 return;
             }
             throw new InvalidOperationException("Unknown command");
@@ -555,15 +608,89 @@ namespace PresentaBridge
     {
         public const byte VK_LEFT = 0x25;
         public const byte VK_RIGHT = 0x27;
+        private const byte VK_ESCAPE = 0x1B;
+        private const byte VK_F5 = 0x74;
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint WM_KEYDOWN = 0x0100;
+        private const uint WM_KEYUP = 0x0101;
+
+        private delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
 
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr window);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr window, StringBuilder className, int maximumCount);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr window, uint message, IntPtr wordParameter, IntPtr longParameter);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr window);
+
         public static void Send(byte virtualKey)
+        {
+            bool isSlideShow;
+            IntPtr powerPoint = FindPowerPointWindow(out isSlideShow);
+            if (powerPoint != IntPtr.Zero && isSlideShow)
+            {
+                PostMessage(powerPoint, WM_KEYDOWN, new IntPtr(virtualKey), IntPtr.Zero);
+                PostMessage(powerPoint, WM_KEYUP, new IntPtr(virtualKey), new IntPtr(unchecked((int)0xC0000001)));
+                return;
+            }
+            SendGlobal(virtualKey);
+        }
+
+        public static void ControlPowerPoint(bool start)
+        {
+            bool isSlideShow;
+            IntPtr powerPoint = FindPowerPointWindow(out isSlideShow);
+            if (powerPoint == IntPtr.Zero) throw new InvalidOperationException("Abre PowerPoint antes de iniciar la presentación.");
+            SetForegroundWindow(powerPoint);
+            Thread.Sleep(140);
+            SendGlobal(start ? VK_F5 : VK_ESCAPE);
+        }
+
+        private static void SendGlobal(byte virtualKey)
         {
             keybd_event(virtualKey, 0, 0, UIntPtr.Zero);
             keybd_event(virtualKey, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        }
+
+        private static IntPtr FindPowerPointWindow(out bool isSlideShow)
+        {
+            IntPtr slideShow = IntPtr.Zero;
+            IntPtr editor = IntPtr.Zero;
+            EnumWindows(delegate(IntPtr window, IntPtr parameter)
+            {
+                if (!IsWindowVisible(window)) return true;
+                uint processId;
+                GetWindowThreadProcessId(window, out processId);
+                try
+                {
+                    using (Process process = Process.GetProcessById((int)processId))
+                    {
+                        if (!string.Equals(process.ProcessName, "POWERPNT", StringComparison.OrdinalIgnoreCase)) return true;
+                    }
+                    var className = new StringBuilder(128);
+                    GetClassName(window, className, className.Capacity);
+                    if (string.Equals(className.ToString(), "screenClass", StringComparison.OrdinalIgnoreCase)) slideShow = window;
+                    else if (editor == IntPtr.Zero) editor = window;
+                }
+                catch { }
+                return slideShow == IntPtr.Zero;
+            }, IntPtr.Zero);
+            isSlideShow = slideShow != IntPtr.Zero;
+            return isSlideShow ? slideShow : editor;
         }
     }
 }

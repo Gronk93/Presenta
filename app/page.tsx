@@ -6,11 +6,18 @@ type Mode = "loading" | "home" | "pair" | "control" | "receiver";
 type LinkState = "idle" | "waiting" | "connecting" | "connected" | "offline";
 type BridgeState = "missing" | "detected" | "connected" | "error";
 type LocalRequestInit = RequestInit & { targetAddressSpace?: "loopback" };
+type SafeDisplayMediaOptions = DisplayMediaStreamOptions & {
+  selfBrowserSurface?: "exclude" | "include";
+  monitorTypeSurfaces?: "exclude" | "include";
+  surfaceSwitching?: "exclude" | "include";
+  preferCurrentTab?: boolean;
+};
 type RemoteMessage =
-  | { type: "pointer"; x: number; y: number }
+  | { type: "pointer"; x: number; y: number; dx?: number; dy?: number; relative?: boolean }
   | { type: "slide"; direction: 1 | -1 }
   | { type: "laser"; active: boolean }
-  | { type: "blackout"; active: boolean };
+  | { type: "blackout"; active: boolean }
+  | { type: "presentation"; action: "start" | "stop" };
 type PeerMessage = RemoteMessage | { type: "heartbeat"; sentAt: number } | { type: "heartbeat-ack"; sentAt: number };
 type SignalEnvelope = { connectionId: string; data: unknown };
 
@@ -58,7 +65,9 @@ export default function Home() {
   const broadcastRef = useRef<BroadcastChannel | null>(null);
   const bridgeCodeRef = useRef("");
   const pointerFrame = useRef<number | null>(null);
-  const pendingPointer = useRef({ x: 0.5, y: 0.5 });
+  const pointerPositionRef = useRef({ x: 0.5, y: 0.5 });
+  const pendingPointer = useRef({ x: 0.5, y: 0.5, dx: 0, dy: 0 });
+  const lastPointerSample = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const presentationRef = useRef<HTMLDivElement | null>(null);
@@ -135,7 +144,7 @@ export default function Home() {
     };
     return fetch("http://127.0.0.1:51794/command", options)
       .then((response) => {
-        setBridgeState(response.ok ? "connected" : "error");
+        setBridgeState(response.ok || response.status !== 401 ? "connected" : "error");
         return response.ok;
       })
       .catch(() => {
@@ -145,7 +154,11 @@ export default function Home() {
   }, []);
 
   const receiveMessage = useCallback((message: RemoteMessage) => {
-    if (message.type === "pointer") setPointer({ x: message.x, y: message.y });
+    if (message.type === "pointer") {
+      const next = { x: message.x, y: message.y };
+      pointerPositionRef.current = next;
+      setPointer(next);
+    }
     if (message.type === "slide") setSlide((current) => Math.max(1, current + message.direction));
     if (message.type === "laser") setLaser(message.active);
     if (message.type === "blackout") setBlackout(message.active);
@@ -436,19 +449,46 @@ export default function Home() {
     sendRemote({ type: "blackout", active });
   };
 
+  const startPointer = (event: PointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    lastPointerSample.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+  };
+
   const movePointer = (event: PointerEvent<HTMLDivElement>) => {
+    const previous = lastPointerSample.current;
+    if (!previous || previous.pointerId !== event.pointerId) return;
     const bounds = event.currentTarget.getBoundingClientRect();
-    pendingPointer.current = {
-      x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
-      y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+    const pixelX = event.clientX - previous.x;
+    const pixelY = event.clientY - previous.y;
+    lastPointerSample.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+    const acceleration = 0.72 + Math.min(0.95, Math.hypot(pixelX, pixelY) / 22);
+    const dx = Math.max(-0.12, Math.min(0.12, (pixelX / bounds.width) * 1.35 * acceleration));
+    const dy = Math.max(-0.12, Math.min(0.12, (pixelY / bounds.height) * 1.35 * acceleration));
+    if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) return;
+    const next = {
+      x: Math.max(0, Math.min(1, pointerPositionRef.current.x + dx)),
+      y: Math.max(0, Math.min(1, pointerPositionRef.current.y + dy)),
     };
-    setPointer(pendingPointer.current);
+    pointerPositionRef.current = next;
+    setPointer(next);
+    pendingPointer.current.x = next.x;
+    pendingPointer.current.y = next.y;
+    pendingPointer.current.dx += dx;
+    pendingPointer.current.dy += dy;
     if (pointerFrame.current === null) {
       pointerFrame.current = window.requestAnimationFrame(() => {
-        sendRemote({ type: "pointer", ...pendingPointer.current });
+        const update = { ...pendingPointer.current };
+        pendingPointer.current.dx = 0;
+        pendingPointer.current.dy = 0;
+        sendRemote({ type: "pointer", ...update, relative: true });
         pointerFrame.current = null;
       });
     }
+  };
+
+  const endPointer = (event: PointerEvent<HTMLDivElement>) => {
+    if (lastPointerSample.current?.pointerId === event.pointerId) lastPointerSample.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
   const promptInstall = async () => {
@@ -473,11 +513,24 @@ export default function Home() {
     }
     try {
       screenStream?.getTracks().forEach((track) => track.stop());
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 60 } }, audio: false });
+      const options: SafeDisplayMediaOptions = {
+        video: { frameRate: { ideal: 30, max: 60 } },
+        audio: false,
+        selfBrowserSurface: "exclude",
+        monitorTypeSurfaces: "exclude",
+        surfaceSwitching: "include",
+        preferCurrentTab: false,
+      };
+      const stream = await navigator.mediaDevices.getDisplayMedia(options);
       const track = stream.getVideoTracks()[0];
+      if (track?.getSettings().displaySurface === "monitor") {
+        stream.getTracks().forEach((item) => item.stop());
+        setToast("Para evitar el efecto espejo, elige Ventana y después PowerPoint");
+        return;
+      }
       if (track) track.addEventListener("ended", () => setScreenStream(null), { once: true });
       setScreenStream(stream);
-      setToast("Pantalla lista para presentar");
+      setToast("Ventana lista para presentar");
     } catch {
       setToast("No se seleccionó ninguna pantalla");
     }
@@ -491,6 +544,16 @@ export default function Home() {
   const enterFullscreen = async () => {
     if (!presentationRef.current) return;
     await presentationRef.current.requestFullscreen?.();
+  };
+
+  const controlPowerPoint = async (action: "start" | "stop") => {
+    if (!bridgeCodeRef.current || bridgeState !== "connected") {
+      setShowBridgeDialog(true);
+      setToast("Conecta Presenta Bridge para controlar PowerPoint");
+      return;
+    }
+    const sent = await forwardToBridge({ type: "presentation", action });
+    setToast(sent ? (action === "start" ? "PowerPoint inició la presentación" : "Presentación detenida") : "Abre PowerPoint y vuelve a intentarlo");
   };
 
   const connectBridge = async () => {
@@ -587,10 +650,10 @@ export default function Home() {
             <span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span>
           </div>
 
-          <div className="touch-area" onPointerDown={movePointer} onPointerMove={(event) => { if (event.buttons === 1 || event.pointerType === "touch") movePointer(event); }}>
+          <div className="touch-area" onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer}>
             <span className="touch-grid" aria-hidden="true" />
             <span className="finger-dot" style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }} />
-            <span className="touch-instruction">Desliza para mover el puntero</span>
+            <span className="touch-instruction">Úsalo como trackpad: desliza varias veces para recorrer la pantalla</span>
           </div>
 
           <div className="tool-row">
@@ -623,9 +686,14 @@ export default function Home() {
           </div>
 
           <div className="screen-share-controls">
-            <button className="share-button" onClick={startScreenShare}>{screenStream ? "Cambiar pantalla" : "Elegir pantalla o ventana"}</button>
+            <button className="share-button" onClick={startScreenShare}>{screenStream ? "Cambiar ventana" : "Elegir ventana de PowerPoint"}</button>
             {screenStream && <button onClick={enterFullscreen}>Presentar en pantalla completa</button>}
             {screenStream && <button className="stop-share" onClick={stopScreenShare}>Dejar de compartir</button>}
+          </div>
+
+          <div className="powerpoint-guide">
+            <div><strong>Para PowerPoint</strong><span>Abre tu archivo y, en el selector, elige <b>Ventana → PowerPoint</b>. No elijas la pantalla donde está Presenta.</span></div>
+            <div className="powerpoint-actions"><button onClick={() => void controlPowerPoint("start")}>Iniciar diapositivas</button><button onClick={() => void controlPowerPoint("stop")}>Finalizar</button></div>
           </div>
 
           <div ref={presentationRef} className={`presentation-canvas ${screenStream ? "has-share" : ""} ${blackout ? "is-blackout" : ""}`}>
@@ -634,9 +702,9 @@ export default function Home() {
             ) : (
               <div className="presentation-empty">
                 <span className="empty-screen-icon" aria-hidden="true" />
-                <h1>Elige lo que deseas presentar</h1>
-                <p>Selecciona una pantalla completa, una ventana de PowerPoint o una pestaña del navegador.</p>
-                <button className="primary-button" onClick={startScreenShare}>Elegir ahora <span>→</span></button>
+                <h1>Elige la ventana de PowerPoint</h1>
+                <p>Selecciona <b>Ventana</b> y después PowerPoint. Presenta excluye su propia pantalla para evitar el efecto espejo.</p>
+                <button className="primary-button" onClick={startScreenShare}>Elegir ventana <span>→</span></button>
               </div>
             )}
             <div className={`laser-pointer ${laser ? "" : "is-hidden"}`} style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }} />
