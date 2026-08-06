@@ -96,12 +96,31 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .touch-grid { position: absolute; inset: 0; background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 44px 44px; opacity: .34; }
 .finger-dot { position: absolute; width: 44px; height: 44px; transform: translate(-50%,-50%); border: 2px solid var(--violet); border-radius: 50%; background: rgba(103,87,217,.12); box-shadow: 0 0 0 8px rgba(103,87,217,.05); pointer-events: none; transition: left 54ms cubic-bezier(.16,.75,.28,1), top 54ms cubic-bezier(.16,.75,.28,1); }
 .touch-instruction { position: absolute; left: 0; right: 0; bottom: 17px; text-align: center; color: var(--muted); font-size: .8rem; pointer-events: none; }
-.tool-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+.tool-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
 .tool-row button { min-height: 54px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.52); cursor: pointer; }
 .tool-row button.is-active { background: var(--violet-soft); border-color: var(--violet); color: var(--violet-dark); }
 .tool-row button.blackout-active { background: var(--ink); color: white; border-color: var(--ink); }
 .laser-icon { width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 4px rgba(237,68,88,.16); }
+.pen-icon { position: relative; width: 16px; height: 4px; display: block; border-radius: 3px; background: currentColor; transform: rotate(-42deg); }
+.pen-icon::after { content: ""; position: absolute; right: -4px; top: 0; border-top: 2px solid transparent; border-bottom: 2px solid transparent; border-left: 5px solid currentColor; }
 .screen-icon { width: 16px; height: 11px; border: 1.5px solid currentColor; border-radius: 2px; }
+.pen-panel { margin: 0 0 12px; padding: 13px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,254,250,.72); box-shadow: 0 12px 30px rgba(39,32,74,.06); }
+.pen-section { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pen-section > span { color: var(--muted); font-size: .68rem; font-weight: 650; }
+.pen-section > div { display: flex; gap: 6px; }
+.board-options { padding-bottom: 11px; border-bottom: 1px solid var(--line); }
+.board-options button, .pen-actions button { min-height: 34px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--white); font-size: .68rem; cursor: pointer; }
+.board-options button.is-selected, .pen-actions button.is-selected { border-color: var(--violet); background: var(--violet-soft); color: var(--violet-dark); }
+.board-options button.dark-board { background: var(--ink); color: white; }
+.pen-settings { display: grid; grid-template-columns: 1fr 1fr auto; align-items: center; gap: 15px; padding-top: 11px; }
+.color-options button { --pen-color: #111827; width: 30px; height: 30px; padding: 0; border: 3px solid var(--white); border-radius: 50%; background: var(--pen-color); box-shadow: 0 0 0 1px var(--line); cursor: pointer; }
+.color-options button.is-selected { box-shadow: 0 0 0 2px var(--violet); }
+.width-options button { width: 34px; height: 30px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--white); cursor: pointer; }
+.width-options button i { display: block; max-width: 14px; max-height: 14px; border-radius: 50%; background: var(--ink); }
+.width-options button.is-selected { border-color: var(--violet); background: var(--violet-soft); }
+.pen-actions { display: flex; gap: 6px; }
+.pen-actions button { display: flex; align-items: center; gap: 6px; }
+.eraser-icon { width: 13px; height: 9px; display: block; border: 1.5px solid currentColor; border-radius: 2px; transform: rotate(-35deg); }
 .slide-controls { display: grid; grid-template-columns: 1fr 100px 1fr; gap: 10px; }
 .slide-controls button { min-height: 68px; border: 1px solid var(--line); border-radius: 17px; background: var(--white); font-size: 1.5rem; cursor: pointer; }
 .slide-controls .next-button { background: var(--violet); color: white; border-color: var(--violet); }
@@ -190,6 +209,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .powerpoint-actions button:first-child { border-color: var(--violet); color: var(--violet-dark); }
 .presentation-canvas { position: relative; min-height: max(430px, calc(100svh - 300px)); overflow: hidden; border-radius: 22px; background: var(--white); border: 1px solid var(--line); box-shadow: 0 25px 60px rgba(39,32,74,.1); transition: background .25s; }
 .presentation-canvas.has-share { display: grid; place-items: center; background: #111318; }
+.drawing-canvas { position: absolute; inset: 0; z-index: 4; width: 100%; height: 100%; pointer-events: none; }
 .shared-screen { width: 100%; height: 100%; min-height: calc(100svh - 250px); object-fit: contain; background: #111318; }
 .presentation-empty { width: min(100% - 36px, 560px); min-height: calc(100svh - 250px); margin: 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .presentation-empty h1 { margin: 24px 0 9px; font-size: clamp(2rem, 4.2vw, 4.6rem); line-height: .98; letter-spacing: -.055em; }
@@ -279,6 +299,9 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
   .screen-share-controls .stop-share { margin-left: 0; }
   .powerpoint-guide { align-items: stretch; flex-direction: column; }
   .powerpoint-actions button { flex: 1; }
+  .pen-settings { grid-template-columns: 1fr 1fr; }
+  .pen-actions { grid-column: 1 / -1; }
+  .pen-actions button { flex: 1; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {

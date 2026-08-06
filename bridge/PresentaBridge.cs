@@ -248,6 +248,14 @@ namespace PresentaBridge
         }
     }
 
+    internal sealed class DrawingStroke
+    {
+        public string Id;
+        public Color Color;
+        public float Width;
+        public readonly List<PointF> Points = new List<PointF>();
+    }
+
     internal sealed class OverlayForm : Form
     {
         private const int WS_EX_TRANSPARENT = 0x20;
@@ -262,6 +270,8 @@ namespace PresentaBridge
         private bool laserActive;
         private bool pointerVisible;
         private bool blackoutActive;
+        private string boardMode = "transparent";
+        private readonly List<DrawingStroke> drawingStrokes = new List<DrawingStroke>();
         private readonly System.Windows.Forms.Timer pointerIdleTimer;
         private readonly System.Windows.Forms.Timer pointerMotionTimer;
         private readonly System.Windows.Forms.Timer safetyTimer;
@@ -380,6 +390,71 @@ namespace PresentaBridge
             RunOnUi(Invalidate);
         }
 
+        public void SetBoard(string mode)
+        {
+            RunOnUi(delegate
+            {
+                if (mode != "transparent" && mode != "white" && mode != "black") mode = "transparent";
+                boardMode = mode;
+                Invalidate();
+            });
+        }
+
+        public void ClearDrawing()
+        {
+            RunOnUi(delegate
+            {
+                drawingStrokes.Clear();
+                Invalidate();
+            });
+        }
+
+        public void ApplyPen(string phase, string id, double x, double y, string color, float width, string tool)
+        {
+            RunOnUi(delegate
+            {
+                float normalizedX = (float)Math.Max(0, Math.Min(1, x));
+                float normalizedY = (float)Math.Max(0, Math.Min(1, y));
+                if (tool == "eraser")
+                {
+                    if (phase == "end") return;
+                    float radius = width <= 3 ? .018f : width <= 7 ? .032f : .052f;
+                    drawingStrokes.RemoveAll(delegate(DrawingStroke stroke)
+                    {
+                        foreach (PointF point in stroke.Points)
+                        {
+                            float dx = point.X - normalizedX;
+                            float dy = point.Y - normalizedY;
+                            if (Math.Sqrt(dx * dx + dy * dy) <= radius) return true;
+                        }
+                        return false;
+                    });
+                    Invalidate();
+                    return;
+                }
+
+                DrawingStroke active = drawingStrokes.Find(delegate(DrawingStroke stroke) { return stroke.Id == id; });
+                if (phase == "start")
+                {
+                    active = new DrawingStroke { Id = id, Color = ParsePenColor(color), Width = (float)Math.Max(2, Math.Min(18, width)) };
+                    active.Points.Add(new PointF(normalizedX, normalizedY));
+                    drawingStrokes.Add(active);
+                }
+                else if (phase == "move" && active != null)
+                {
+                    active.Points.Add(new PointF(normalizedX, normalizedY));
+                }
+                Invalidate();
+            });
+        }
+
+        private static Color ParsePenColor(string value)
+        {
+            if (string.Equals(value, "#2563eb", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(37, 99, 235);
+            if (string.Equals(value, "#111827", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(17, 24, 39);
+            return Color.FromArgb(239, 51, 64);
+        }
+
         public void Touch()
         {
             RunOnUi(delegate
@@ -405,7 +480,10 @@ namespace PresentaBridge
                 return;
             }
 
-            e.Graphics.Clear(Color.Fuchsia);
+            if (boardMode == "white") e.Graphics.Clear(Color.FromArgb(255, 254, 250));
+            else if (boardMode == "black") e.Graphics.Clear(Color.FromArgb(16, 19, 24));
+            else e.Graphics.Clear(Color.Fuchsia);
+            DrawAnnotations(e.Graphics);
             if (!laserActive || !pointerVisible) return;
             float x = (float)(pointerX * ClientSize.Width);
             float y = (float)(pointerY * ClientSize.Height);
@@ -418,6 +496,33 @@ namespace PresentaBridge
                 e.Graphics.FillEllipse(middle, x - 13, y - 13, 26, 26);
                 e.Graphics.FillEllipse(core, x - 7, y - 7, 14, 14);
                 e.Graphics.DrawEllipse(white, x - 8, y - 8, 16, 16);
+            }
+        }
+
+        private void DrawAnnotations(Graphics graphics)
+        {
+            foreach (DrawingStroke stroke in drawingStrokes)
+            {
+                if (stroke.Points.Count == 0) continue;
+                if (stroke.Points.Count == 1)
+                {
+                    PointF point = stroke.Points[0];
+                    float x = point.X * ClientSize.Width;
+                    float y = point.Y * ClientSize.Height;
+                    using (var brush = new SolidBrush(stroke.Color))
+                        graphics.FillEllipse(brush, x - stroke.Width / 2, y - stroke.Width / 2, stroke.Width, stroke.Width);
+                    continue;
+                }
+                PointF[] points = new PointF[stroke.Points.Count];
+                for (int index = 0; index < stroke.Points.Count; index++)
+                    points[index] = new PointF(stroke.Points[index].X * ClientSize.Width, stroke.Points[index].Y * ClientSize.Height);
+                using (var pen = new Pen(stroke.Color, stroke.Width))
+                {
+                    pen.StartCap = LineCap.Round;
+                    pen.EndCap = LineCap.Round;
+                    pen.LineJoin = LineJoin.Round;
+                    graphics.DrawLines(pen, points);
+                }
             }
         }
 
@@ -507,7 +612,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.4.0\",\"ready\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.5.0\",\"ready\":true}");
                     return;
                 }
 
@@ -573,6 +678,28 @@ namespace PresentaBridge
                 if (action == "start") Keyboard.ControlPowerPoint(true);
                 else if (action == "stop") Keyboard.ControlPowerPoint(false);
                 else throw new InvalidOperationException("Unknown presentation action");
+                return;
+            }
+            if (type == "board")
+            {
+                overlay.SetBoard(Convert.ToString(command["mode"]));
+                return;
+            }
+            if (type == "clear-drawing")
+            {
+                overlay.ClearDrawing();
+                return;
+            }
+            if (type == "pen")
+            {
+                overlay.ApplyPen(
+                    Convert.ToString(command["phase"]),
+                    Convert.ToString(command["id"]),
+                    Convert.ToDouble(command["x"]),
+                    Convert.ToDouble(command["y"]),
+                    Convert.ToString(command["color"]),
+                    Convert.ToSingle(command["width"]),
+                    Convert.ToString(command["tool"]));
                 return;
             }
             throw new InvalidOperationException("Unknown command");

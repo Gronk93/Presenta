@@ -12,12 +12,20 @@ type SafeDisplayMediaOptions = DisplayMediaStreamOptions & {
   surfaceSwitching?: "exclude" | "include";
   preferCurrentTab?: boolean;
 };
+type PenColor = "#ef3340" | "#2563eb" | "#111827";
+type PenWidth = 3 | 7 | 12;
+type BoardMode = "transparent" | "white" | "black";
+type StrokePoint = { x: number; y: number };
+type DrawingStroke = { id: string; color: PenColor; width: PenWidth; points: StrokePoint[] };
 type RemoteMessage =
   | { type: "pointer"; x: number; y: number; dx?: number; dy?: number; relative?: boolean }
   | { type: "slide"; direction: 1 | -1 }
   | { type: "laser"; active: boolean }
   | { type: "blackout"; active: boolean }
-  | { type: "presentation"; action: "start" | "stop" };
+  | { type: "presentation"; action: "start" | "stop" }
+  | { type: "pen"; phase: "start" | "move" | "end"; id: string; x: number; y: number; color: PenColor; width: PenWidth; tool: "pen" | "eraser" }
+  | { type: "board"; mode: BoardMode }
+  | { type: "clear-drawing" };
 type PeerMessage = RemoteMessage | { type: "heartbeat"; sentAt: number } | { type: "heartbeat-ack"; sentAt: number };
 type SignalEnvelope = { connectionId: string; data: unknown };
 
@@ -52,6 +60,11 @@ export default function Home() {
   const [slide, setSlide] = useState(1);
   const [laser, setLaser] = useState(false);
   const [blackout, setBlackout] = useState(false);
+  const [interactionMode, setInteractionMode] = useState<"pointer" | "pen">("pointer");
+  const [penColor, setPenColor] = useState<PenColor>("#ef3340");
+  const [penWidth, setPenWidth] = useState<PenWidth>(7);
+  const [penTool, setPenTool] = useState<"pen" | "eraser">("pen");
+  const [boardMode, setBoardMode] = useState<BoardMode>("transparent");
   const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 });
   const [installEvent, setInstallEvent] = useState<Event | null>(null);
   const [online, setOnline] = useState(true);
@@ -68,9 +81,59 @@ export default function Home() {
   const pointerPositionRef = useRef({ x: 0.5, y: 0.5 });
   const pendingPointer = useRef({ x: 0.5, y: 0.5, dx: 0, dy: 0 });
   const lastPointerSample = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const activeStrokeIdRef = useRef<string | null>(null);
+  const drawingCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingFrameRef = useRef<number | null>(null);
+  const strokesRef = useRef<DrawingStroke[]>([]);
+  const boardModeRef = useRef<BoardMode>("transparent");
   const reconnectTimerRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const presentationRef = useRef<HTMLDivElement | null>(null);
+
+  const renderDrawing = useCallback(() => {
+    const canvas = drawingCanvasRef.current;
+    if (!canvas) return;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (!width || !height) return;
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const pixelWidth = Math.round(width * ratio);
+    const pixelHeight = Math.round(height * ratio);
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.clearRect(0, 0, width, height);
+    if (boardModeRef.current !== "transparent") {
+      context.fillStyle = boardModeRef.current === "white" ? "#fffefa" : "#101318";
+      context.fillRect(0, 0, width, height);
+    }
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    for (const stroke of strokesRef.current) {
+      if (!stroke.points.length) continue;
+      context.beginPath();
+      context.strokeStyle = stroke.color;
+      context.lineWidth = stroke.width;
+      context.moveTo(stroke.points[0].x * width, stroke.points[0].y * height);
+      for (let index = 1; index < stroke.points.length; index += 1) {
+        context.lineTo(stroke.points[index].x * width, stroke.points[index].y * height);
+      }
+      if (stroke.points.length === 1) context.lineTo(stroke.points[0].x * width + 0.01, stroke.points[0].y * height + 0.01);
+      context.stroke();
+    }
+  }, []);
+
+  const scheduleDrawingRender = useCallback(() => {
+    if (drawingFrameRef.current !== null) return;
+    drawingFrameRef.current = window.requestAnimationFrame(() => {
+      drawingFrameRef.current = null;
+      renderDrawing();
+    });
+  }, [renderDrawing]);
 
   useEffect(() => {
     const isAndroid = /Android/i.test(navigator.userAgent);
@@ -124,6 +187,14 @@ export default function Home() {
     if (videoRef.current) videoRef.current.srcObject = screenStream;
   }, [screenStream]);
 
+  useEffect(() => {
+    if (mode !== "receiver" || !presentationRef.current) return;
+    const observer = new ResizeObserver(() => renderDrawing());
+    observer.observe(presentationRef.current);
+    renderDrawing();
+    return () => observer.disconnect();
+  }, [mode, renderDrawing]);
+
   const scheduleReconnect = useCallback((delay = 700) => {
     if (reconnectTimerRef.current) return;
     reconnectTimerRef.current = window.setTimeout(() => {
@@ -153,6 +224,34 @@ export default function Home() {
       });
   }, []);
 
+  const applyDrawingMessage = useCallback((message: Extract<RemoteMessage, { type: "pen" | "board" | "clear-drawing" }>) => {
+    if (message.type === "board") {
+      boardModeRef.current = message.mode;
+      setBoardMode(message.mode);
+      scheduleDrawingRender();
+      return;
+    }
+    if (message.type === "clear-drawing") {
+      strokesRef.current = [];
+      scheduleDrawingRender();
+      return;
+    }
+    if (message.tool === "eraser") {
+      if (message.phase === "end") return;
+      const radius = message.width === 3 ? 0.018 : message.width === 7 ? 0.032 : 0.052;
+      strokesRef.current = strokesRef.current.filter((stroke) => !stroke.points.some((point) => Math.hypot(point.x - message.x, point.y - message.y) <= radius));
+      scheduleDrawingRender();
+      return;
+    }
+    if (message.phase === "start") {
+      strokesRef.current.push({ id: message.id, color: message.color, width: message.width, points: [{ x: message.x, y: message.y }] });
+    } else if (message.phase === "move") {
+      const stroke = strokesRef.current.find((item) => item.id === message.id);
+      if (stroke) stroke.points.push({ x: message.x, y: message.y });
+    }
+    scheduleDrawingRender();
+  }, [scheduleDrawingRender]);
+
   const receiveMessage = useCallback((message: RemoteMessage) => {
     if (message.type === "pointer") {
       const next = { x: message.x, y: message.y };
@@ -162,8 +261,9 @@ export default function Home() {
     if (message.type === "slide") setSlide((current) => Math.max(1, current + message.direction));
     if (message.type === "laser") setLaser(message.active);
     if (message.type === "blackout") setBlackout(message.active);
+    if (message.type === "pen" || message.type === "board" || message.type === "clear-drawing") applyDrawingMessage(message);
     void forwardToBridge(message);
-  }, [forwardToBridge]);
+  }, [applyDrawingMessage, forwardToBridge]);
 
   useEffect(() => {
     if (mode !== "receiver") return;
@@ -277,7 +377,7 @@ export default function Home() {
       if (stopped) return;
       activeConnectionId = createConnectionId();
       const peer = createPeer();
-      const channel = peer.createDataChannel("presenta", { ordered: false, maxRetransmits: 1 });
+      const channel = peer.createDataChannel("presenta", { ordered: true });
       prepareChannel(channel);
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
@@ -440,7 +540,30 @@ export default function Home() {
   const toggleLaser = () => {
     const active = !laser;
     setLaser(active);
+    if (active) setInteractionMode("pointer");
     sendRemote({ type: "laser", active });
+  };
+
+  const togglePen = () => {
+    const active = interactionMode !== "pen";
+    setInteractionMode(active ? "pen" : "pointer");
+    if (active && laser) {
+      setLaser(false);
+      sendRemote({ type: "laser", active: false });
+    }
+  };
+
+  const selectBoard = (nextMode: BoardMode) => {
+    setBoardMode(nextMode);
+    boardModeRef.current = nextMode;
+    if (nextMode === "black" && penColor === "#111827") setPenColor("#ef3340");
+    setInteractionMode("pen");
+    sendRemote({ type: "board", mode: nextMode });
+  };
+
+  const clearDrawing = () => {
+    sendRemote({ type: "clear-drawing" });
+    setToast("Anotaciones borradas");
   };
 
   const toggleBlackout = () => {
@@ -452,12 +575,35 @@ export default function Home() {
   const startPointer = (event: PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
     lastPointerSample.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+    if (interactionMode === "pen") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const point = {
+        x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+        y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+      };
+      const strokeId = createConnectionId();
+      activeStrokeIdRef.current = strokeId;
+      pointerPositionRef.current = point;
+      setPointer(point);
+      sendRemote({ type: "pen", phase: "start", id: strokeId, ...point, color: penColor, width: penWidth, tool: penTool });
+    }
   };
 
   const movePointer = (event: PointerEvent<HTMLDivElement>) => {
     const previous = lastPointerSample.current;
     if (!previous || previous.pointerId !== event.pointerId) return;
     const bounds = event.currentTarget.getBoundingClientRect();
+    if (interactionMode === "pen") {
+      lastPointerSample.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+      const point = {
+        x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+        y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+      };
+      pointerPositionRef.current = point;
+      setPointer(point);
+      if (activeStrokeIdRef.current) sendRemote({ type: "pen", phase: "move", id: activeStrokeIdRef.current, ...point, color: penColor, width: penWidth, tool: penTool });
+      return;
+    }
     const pixelX = event.clientX - previous.x;
     const pixelY = event.clientY - previous.y;
     lastPointerSample.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
@@ -487,6 +633,20 @@ export default function Home() {
   };
 
   const endPointer = (event: PointerEvent<HTMLDivElement>) => {
+    if (interactionMode === "pen" && activeStrokeIdRef.current) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      sendRemote({
+        type: "pen",
+        phase: "end",
+        id: activeStrokeIdRef.current,
+        x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+        y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+        color: penColor,
+        width: penWidth,
+        tool: penTool,
+      });
+      activeStrokeIdRef.current = null;
+    }
     if (lastPointerSample.current?.pointerId === event.pointerId) lastPointerSample.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
@@ -653,13 +813,33 @@ export default function Home() {
           <div className="touch-area" onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer}>
             <span className="touch-grid" aria-hidden="true" />
             <span className="finger-dot" style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }} />
-            <span className="touch-instruction">Úsalo como trackpad: desliza varias veces para recorrer la pantalla</span>
+            <span className="touch-instruction">{interactionMode === "pen" ? (penTool === "eraser" ? "Desliza sobre un trazo para borrarlo" : "Escribe aquí para dibujar en la presentación") : "Úsalo como trackpad: desliza varias veces para recorrer la pantalla"}</span>
           </div>
 
           <div className="tool-row">
             <button className={laser ? "is-active" : ""} onClick={toggleLaser}><i className="laser-icon" />Láser</button>
+            <button className={interactionMode === "pen" ? "is-active" : ""} onClick={togglePen}><i className="pen-icon" />Lápiz</button>
             <button className={blackout ? "is-active blackout-active" : ""} onClick={toggleBlackout}><i className="screen-icon" />Pantalla negra</button>
           </div>
+
+          {interactionMode === "pen" && (
+            <div className="pen-panel">
+              <div className="pen-section board-options"><span>Superficie</span><div>
+                <button className={boardMode === "transparent" ? "is-selected" : ""} onClick={() => selectBoard("transparent")}>Pantalla</button>
+                <button className={boardMode === "white" ? "is-selected" : ""} onClick={() => selectBoard("white")}>Blanca</button>
+                <button className={boardMode === "black" ? "is-selected dark-board" : ""} onClick={() => selectBoard("black")}>Negra</button>
+              </div></div>
+              <div className="pen-settings">
+                <div className="pen-section"><span>Color</span><div className="color-options">
+                  {(["#ef3340", "#2563eb", "#111827"] as PenColor[]).map((color) => <button key={color} className={penColor === color && penTool === "pen" ? "is-selected" : ""} style={{ "--pen-color": color } as React.CSSProperties} onClick={() => { setPenColor(color); setPenTool("pen"); }} aria-label={color === "#ef3340" ? "Rojo" : color === "#2563eb" ? "Azul" : "Negro"} />)}
+                </div></div>
+                <div className="pen-section"><span>Grosor</span><div className="width-options">
+                  {([3, 7, 12] as PenWidth[]).map((width) => <button key={width} className={penWidth === width ? "is-selected" : ""} onClick={() => setPenWidth(width)} aria-label={`Grosor ${width}`}><i style={{ width, height: width }} /></button>)}
+                </div></div>
+                <div className="pen-actions"><button className={penTool === "eraser" ? "is-selected" : ""} onClick={() => setPenTool(penTool === "eraser" ? "pen" : "eraser")}><i className="eraser-icon" />Borrador</button><button onClick={clearDrawing}>Limpiar</button></div>
+              </div>
+            </div>
+          )}
 
           <div className="slide-controls">
             <button onClick={() => changeSlide(-1)} aria-label="Diapositiva anterior">←</button>
@@ -696,7 +876,7 @@ export default function Home() {
             <div className="powerpoint-actions"><button onClick={() => void controlPowerPoint("start")}>Iniciar diapositivas</button><button onClick={() => void controlPowerPoint("stop")}>Finalizar</button></div>
           </div>
 
-          <div ref={presentationRef} className={`presentation-canvas ${screenStream ? "has-share" : ""} ${blackout ? "is-blackout" : ""}`}>
+          <div ref={presentationRef} className={`presentation-canvas board-${boardMode} ${screenStream ? "has-share" : ""} ${blackout ? "is-blackout" : ""}`}>
             {screenStream ? (
               <video ref={videoRef} className="shared-screen" autoPlay muted playsInline />
             ) : (
@@ -707,6 +887,7 @@ export default function Home() {
                 <button className="primary-button" onClick={startScreenShare}>Elegir ventana <span>→</span></button>
               </div>
             )}
+            <canvas ref={drawingCanvasRef} className="drawing-canvas" aria-label="Anotaciones de Presenta" />
             <div className={`laser-pointer ${laser ? "" : "is-hidden"}`} style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }} />
             {blackout && <div className="blackout-message">Pantalla en pausa</div>}
           </div>
