@@ -91,6 +91,10 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .controller-view { width: min(100%, 560px); min-height: 100svh; margin: 0 auto; padding: max(22px, env(safe-area-inset-top)) 0 max(18px, env(safe-area-inset-bottom)); }
 .controller-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
 .controller-heading h1 { margin: 6px 0 0; font-size: 1.55rem; letter-spacing: -.03em; }
+.mobile-identity { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 2px 9px; margin: -10px 0 13px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.42); }
+.mobile-identity span { color: var(--muted); font-size: .64rem; }
+.mobile-identity strong { font-size: .76rem; }
+.mobile-identity small { grid-column: 1 / -1; color: var(--green); font-size: .64rem; }
 .link-pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.35); font-size: .74rem; color: var(--muted); white-space: nowrap; }
 .touch-area { position: relative; height: min(53svh, 430px); min-height: 300px; overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: var(--white); touch-action: none; cursor: crosshair; box-shadow: 0 22px 50px rgba(39,32,74,.08); }
 .touch-grid { position: absolute; inset: 0; background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 44px 44px; opacity: .34; }
@@ -188,6 +192,13 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .room-code-block button { display: flex; align-items: baseline; gap: 12px; padding: 0; border: 0; background: none; font-family: var(--font-geist-mono), monospace; font-size: 2rem; font-weight: 700; letter-spacing: .09em; cursor: pointer; }
 .room-code-block small { color: var(--violet); font-family: var(--font-geist-sans); font-size: .72rem; letter-spacing: 0; }
 .receiver-status { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: .77rem; }
+.connection-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: -5px 0 13px; }
+.connection-device { position: relative; display: grid; grid-template-columns: 12px 1fr; column-gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.42); }
+.connection-device > i { grid-row: 1 / 4; width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: #9b9b98; box-shadow: 0 0 0 4px rgba(155,155,152,.1); }
+.connection-device.is-connected > i { background: var(--green); box-shadow: 0 0 0 4px rgba(22,122,89,.11); }
+.connection-device span { color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .58rem; letter-spacing: .09em; text-transform: uppercase; }
+.connection-device strong { margin-top: 2px; font-size: .8rem; }
+.connection-device small { margin-top: 3px; color: var(--muted); font-size: .66rem; }
 .bridge-button { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.48); color: var(--muted); font-size: .74rem; cursor: pointer; }
 .bridge-button i { width: 8px; height: 8px; border-radius: 2px; background: #9b9b98; }
 .bridge-button.bridge-connected { color: var(--green); border-color: rgba(22,122,89,.3); background: rgba(22,122,89,.08); }
@@ -288,6 +299,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
   .controller-heading h1 { font-size: 1.2rem; }
   .receiver-toolbar { align-items: flex-start; }
   .receiver-status { flex-direction: column; align-items: flex-end; gap: 7px; }
+  .connection-overview { grid-template-columns: 1fr; }
   .bridge-button { max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .room-code-block button { font-size: 1.45rem; }
   .presentation-canvas { min-height: calc(100svh - 180px); border-radius: 16px; }

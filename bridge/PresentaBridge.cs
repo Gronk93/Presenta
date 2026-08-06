@@ -19,17 +19,19 @@ namespace PresentaBridge
         private static void Main()
         {
             bool created;
+            bool eventCreated;
+            using (var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\PresentaBridge.Show", out eventCreated))
             using (var mutex = new Mutex(true, "Local\\PresentaBridge", out created))
             {
                 if (!created)
                 {
-                    MessageBox.Show("Presenta Bridge ya está ejecutándose.", "Presenta Bridge", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    showEvent.Set();
                     return;
                 }
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new BridgeForm());
+                Application.Run(new BridgeForm(showEvent));
             }
         }
     }
@@ -40,20 +42,24 @@ namespace PresentaBridge
         private readonly BridgeServer server;
         private readonly NotifyIcon trayIcon;
         private readonly Label statusLabel;
+        private readonly Label deviceLabel;
         private readonly Label codeLabel;
         private readonly ComboBox screenPicker;
         private readonly string pairingCode;
-        private bool exitRequested;
+        private readonly EventWaitHandle showEvent;
+        private readonly Thread showThread;
+        private volatile bool exitRequested;
 
-        public BridgeForm()
+        public BridgeForm(EventWaitHandle showEvent)
         {
+            this.showEvent = showEvent;
             pairingCode = LoadOrCreatePairingCode();
             Text = "Presenta Bridge";
             Icon = SystemIcons.Application;
             BackColor = Color.FromArgb(243, 240, 232);
             ForeColor = Color.FromArgb(23, 28, 37);
             Font = new Font("Segoe UI", 9.5f, FontStyle.Regular, GraphicsUnit.Point);
-            ClientSize = new Size(470, 330);
+            ClientSize = new Size(470, 355);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -122,17 +128,28 @@ namespace PresentaBridge
             var hideButton = MakeButton("Ocultar", new Point(320, 226), new Size(117, 36));
             hideButton.Click += delegate { Hide(); };
 
+            deviceLabel = new Label
+            {
+                Text = "Celular: esperando conexión",
+                AutoSize = false,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Location = new Point(29, 276),
+                Size = new Size(408, 22),
+                ForeColor = Color.FromArgb(110, 113, 111),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold)
+            };
+
             statusLabel = new Label
             {
                 Text = "Iniciando servicio local…",
                 AutoSize = false,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Location = new Point(29, 286),
+                Location = new Point(29, 310),
                 Size = new Size(408, 22),
                 ForeColor = Color.FromArgb(22, 122, 89)
             };
 
-            Controls.AddRange(new Control[] { header, title, codeCaption, codeLabel, copyButton, screenCaption, screenPicker, hideButton, statusLabel });
+            Controls.AddRange(new Control[] { header, title, codeCaption, codeLabel, copyButton, screenCaption, screenPicker, hideButton, deviceLabel, statusLabel });
 
             overlay = new OverlayForm();
             overlay.UseScreen(0);
@@ -153,8 +170,10 @@ namespace PresentaBridge
             };
             trayIcon.DoubleClick += delegate { ShowWindow(); };
 
-            server = new BridgeServer(pairingCode, overlay, SetBridgeStatus);
+            server = new BridgeServer(pairingCode, overlay, SetBridgeStatus, SetDeviceStatus);
             server.Start();
+            showThread = new Thread(ShowSignalLoop) { IsBackground = true, Name = "Presenta Bridge Show Signal" };
+            showThread.Start();
         }
 
         private Button MakeButton(string text, Point location, Size size)
@@ -188,6 +207,29 @@ namespace PresentaBridge
             Activate();
         }
 
+        private void ShowSignalLoop()
+        {
+            while (!exitRequested)
+            {
+                try { showEvent.WaitOne(); }
+                catch (ObjectDisposedException) { return; }
+                if (exitRequested || IsDisposed) return;
+                try { BeginInvoke(new MethodInvoker(ShowWindow)); }
+                catch (InvalidOperationException) { return; }
+            }
+        }
+
+        private void SetDeviceStatus(string name, string platform)
+        {
+            if (IsDisposed) return;
+            MethodInvoker update = delegate
+            {
+                deviceLabel.Text = "Celular: " + name + "  ·  " + platform + "  ·  señal " + DateTime.Now.ToString("HH:mm:ss");
+                deviceLabel.ForeColor = Color.FromArgb(22, 122, 89);
+            };
+            if (!IsHandleCreated || !InvokeRequired) update(); else BeginInvoke(update);
+        }
+
         private void SetBridgeStatus(string text, bool ok)
         {
             if (IsDisposed) return;
@@ -207,6 +249,8 @@ namespace PresentaBridge
                 Hide();
                 return;
             }
+            exitRequested = true;
+            showEvent.Set();
             server.Dispose();
             overlay.Close();
             trayIcon.Visible = false;
@@ -539,16 +583,18 @@ namespace PresentaBridge
         private readonly string pairingCode;
         private readonly OverlayForm overlay;
         private readonly Action<string, bool> status;
+        private readonly Action<string, string> deviceStatus;
         private readonly HttpListener listener = new HttpListener();
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
         private Thread listenerThread;
         private volatile bool running;
 
-        public BridgeServer(string pairingCode, OverlayForm overlay, Action<string, bool> status)
+        public BridgeServer(string pairingCode, OverlayForm overlay, Action<string, bool> status, Action<string, string> deviceStatus)
         {
             this.pairingCode = pairingCode;
             this.overlay = overlay;
             this.status = status;
+            this.deviceStatus = deviceStatus;
             listener.Prefixes.Add("http://127.0.0.1:" + Port + "/");
         }
 
@@ -612,7 +658,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.5.0\",\"ready\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.5.1\",\"ready\":true}");
                     return;
                 }
 
@@ -647,6 +693,15 @@ namespace PresentaBridge
             overlay.Touch();
             string type = command.ContainsKey("type") ? Convert.ToString(command["type"]) : "";
             if (type == "ping") return;
+            if (type == "device")
+            {
+                string name = command.ContainsKey("name") ? Convert.ToString(command["name"]) : "Celular";
+                string platform = command.ContainsKey("platform") ? Convert.ToString(command["platform"]) : "Móvil";
+                if (name.Length > 48) name = name.Substring(0, 48);
+                if (platform.Length > 24) platform = platform.Substring(0, 24);
+                deviceStatus(name, platform);
+                return;
+            }
             if (type == "pointer")
             {
                 bool relative = command.ContainsKey("relative") && Convert.ToBoolean(command["relative"]);

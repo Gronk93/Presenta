@@ -17,6 +17,7 @@ type PenWidth = 3 | 7 | 12;
 type BoardMode = "transparent" | "white" | "black";
 type StrokePoint = { x: number; y: number };
 type DrawingStroke = { id: string; color: PenColor; width: PenWidth; points: StrokePoint[] };
+type DevicePresence = { deviceId: string; name: string; platform: string };
 type RemoteMessage =
   | { type: "pointer"; x: number; y: number; dx?: number; dy?: number; relative?: boolean }
   | { type: "slide"; direction: 1 | -1 }
@@ -25,7 +26,8 @@ type RemoteMessage =
   | { type: "presentation"; action: "start" | "stop" }
   | { type: "pen"; phase: "start" | "move" | "end"; id: string; x: number; y: number; color: PenColor; width: PenWidth; tool: "pen" | "eraser" }
   | { type: "board"; mode: BoardMode }
-  | { type: "clear-drawing" };
+  | { type: "clear-drawing" }
+  | ({ type: "device" } & DevicePresence);
 type PeerMessage = RemoteMessage | { type: "heartbeat"; sentAt: number } | { type: "heartbeat-ack"; sentAt: number };
 type SignalEnvelope = { connectionId: string; data: unknown };
 
@@ -52,6 +54,18 @@ function statusLabel(state: LinkState) {
   return "Listo";
 }
 
+function detectDevicePresence(): DevicePresence {
+  const userAgent = navigator.userAgent;
+  const androidModel = userAgent.match(/Android[^;]*;\s*(?:[a-z]{2}[-_][a-z]{2};\s*)?([^;)]+?)(?:\s+Build\/|\))/i)?.[1]?.trim();
+  const platform = /Android/i.test(userAgent) ? "Android" : /iPhone|iPad/i.test(userAgent) ? "iOS" : navigator.platform || "Dispositivo móvil";
+  let deviceId = window.localStorage.getItem("presenta.deviceId");
+  if (!deviceId) {
+    deviceId = createConnectionId();
+    window.localStorage.setItem("presenta.deviceId", deviceId);
+  }
+  return { deviceId, name: androidModel || (/iPhone/i.test(userAgent) ? "iPhone" : /iPad/i.test(userAgent) ? "iPad" : platform), platform };
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("loading");
   const [room, setRoom] = useState("");
@@ -65,6 +79,8 @@ export default function Home() {
   const [penWidth, setPenWidth] = useState<PenWidth>(7);
   const [penTool, setPenTool] = useState<"pen" | "eraser">("pen");
   const [boardMode, setBoardMode] = useState<BoardMode>("transparent");
+  const [remoteDevice, setRemoteDevice] = useState<(DevicePresence & { lastSeen: Date }) | null>(null);
+  const [localDeviceName, setLocalDeviceName] = useState("Este celular");
   const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 });
   const [installEvent, setInstallEvent] = useState<Event | null>(null);
   const [online, setOnline] = useState(true);
@@ -86,6 +102,7 @@ export default function Home() {
   const drawingFrameRef = useRef<number | null>(null);
   const strokesRef = useRef<DrawingStroke[]>([]);
   const boardModeRef = useRef<BoardMode>("transparent");
+  const devicePresenceRef = useRef<DevicePresence>({ deviceId: "pending", name: "Este celular", platform: "Móvil" });
   const reconnectTimerRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const presentationRef = useRef<HTMLDivElement | null>(null);
@@ -136,6 +153,8 @@ export default function Home() {
   }, [renderDrawing]);
 
   useEffect(() => {
+    devicePresenceRef.current = detectDevicePresence();
+    setLocalDeviceName(devicePresenceRef.current.name);
     const isAndroid = /Android/i.test(navigator.userAgent);
     const remoteRequested = new URL(window.location.href).searchParams.get("remote") === "1";
     const installed = window.matchMedia("(display-mode: standalone)").matches;
@@ -261,6 +280,7 @@ export default function Home() {
     if (message.type === "slide") setSlide((current) => Math.max(1, current + message.direction));
     if (message.type === "laser") setLaser(message.active);
     if (message.type === "blackout") setBlackout(message.active);
+    if (message.type === "device") setRemoteDevice({ deviceId: message.deviceId, name: message.name, platform: message.platform, lastSeen: new Date() });
     if (message.type === "pen" || message.type === "board" || message.type === "clear-drawing") applyDrawingMessage(message);
     void forwardToBridge(message);
   }, [applyDrawingMessage, forwardToBridge]);
@@ -320,6 +340,7 @@ export default function Home() {
       channel.onopen = () => {
         lastHeartbeatAck = Date.now();
         setLinkState("connected");
+        if (role === "controller") channel.send(JSON.stringify({ type: "device", ...devicePresenceRef.current } satisfies RemoteMessage));
       };
       channel.onclose = () => {
         if (stopped) return;
@@ -448,6 +469,7 @@ export default function Home() {
               lastHeartbeatAck = Date.now();
             } else {
               channel.send(JSON.stringify({ type: "heartbeat", sentAt: Date.now() } satisfies PeerMessage));
+              channel.send(JSON.stringify({ type: "device", ...devicePresenceRef.current } satisfies RemoteMessage));
             }
           }
         }, 4000);
@@ -809,6 +831,7 @@ export default function Home() {
             <div><span className="eyebrow">PRESENTA · CONTROL</span><h1>Sala {formatCode(room)}</h1></div>
             <span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span>
           </div>
+          <div className="mobile-identity"><span>Este dispositivo</span><strong>{localDeviceName}</strong><small>{linkState === "connected" ? "Enviando señal a la computadora" : "Buscando la computadora"}</small></div>
 
           <div className="touch-area" onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer}>
             <span className="touch-grid" aria-hidden="true" />
@@ -863,6 +886,11 @@ export default function Home() {
               <button className={`bridge-button bridge-${bridgeState}`} onClick={() => setShowBridgeDialog(true)}><i />{bridgeLabel}</button>
               <span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span>
             </div>
+          </div>
+
+          <div className="connection-overview" aria-label="Estado de conexiones">
+            <div className={`connection-device ${remoteDevice && linkState === "connected" ? "is-connected" : ""}`}><i /><span>Celular</span><strong>{remoteDevice?.name ?? "Esperando conexión"}</strong><small>{remoteDevice ? `${remoteDevice.platform} · última señal ${remoteDevice.lastSeen.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Escribe el código de la sala en la PWA"}</small></div>
+            <div className={`connection-device ${bridgeState === "connected" ? "is-connected" : ""}`}><i /><span>Bridge de Windows</span><strong>{bridgeState === "connected" ? "Recibiendo órdenes" : bridgeState === "detected" ? "Detectado, falta el código" : "Sin conectar"}</strong><small>{bridgeState === "connected" ? "PowerPoint, láser y anotaciones habilitados" : "Abre Bridge e ingresa su código de seis dígitos"}</small></div>
           </div>
 
           <div className="screen-share-controls">
