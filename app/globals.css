@@ -249,7 +249,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .deck-visual span { flex: 1; height: 40%; border-radius: 8px 8px 2px 2px; background: var(--violet-soft); }
 .deck-visual span:nth-child(2) { height: 68%; background: #bdb4ef; }
 .deck-visual span:nth-child(3) { height: 100%; background: var(--violet); }
-.laser-pointer { position: absolute; width: 16px; height: 16px; transform: translate(-50%,-50%); border: 3px solid white; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 7px rgba(237,68,88,.18), 0 0 24px rgba(237,68,88,.68); transition: left 68ms cubic-bezier(.16,.78,.26,1), top 68ms cubic-bezier(.16,.78,.26,1), opacity .2s; z-index: 5; }
+.laser-pointer { position: absolute; width: 12px; height: 12px; transform: translate(-50%,-50%); border: 2px solid white; border-radius: 50%; background: #eb192d; box-shadow: 0 0 9px rgba(235,25,45,.34); transition: left 45ms linear, top 45ms linear, opacity .16s; z-index: 5; }
 .laser-pointer.is-hidden { opacity: 0; }
 .presentation-canvas.is-blackout { background: #0d0e11; }
 .presentation-canvas.is-blackout > :not(.blackout-message) { opacity: 0; }

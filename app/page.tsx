@@ -415,7 +415,7 @@ export default function Home() {
         if (!stopped) setLinkState("offline");
       } finally {
         polling = false;
-        if (!stopped) pollTimer = window.setTimeout(poll, document.visibilityState === "visible" ? 80 : 900);
+        if (!stopped) pollTimer = window.setTimeout(poll, document.visibilityState === "visible" ? 60 : 900);
       }
     };
 
@@ -888,12 +888,12 @@ export default function Home() {
             <div className="direct-stage">
               <span className="eyebrow">MODO RECOMENDADO</span>
               <h1>PowerPoint directo en la pantalla</h1>
-              <p>Abre tu archivo de PowerPoint y pulsa el botón. La presentación ocupará toda la pantalla; Presenta quedará detrás y el celular seguirá controlando diapositivas, láser y lápiz.</p>
+              <p>Abre tu archivo de PowerPoint y pulsa el botón. La presentación ocupará toda la pantalla; Presenta quedará detrás y el celular seguirá controlando diapositivas, láser, lápiz, pizarras y pantalla negra.</p>
               <div className="direct-stage-actions">
                 <button className="direct-primary" onClick={() => void controlPowerPoint("start")}>Presentar PowerPoint directamente <span>→</span></button>
                 <button onClick={startScreenShare}>Usar visor de Presenta</button>
               </div>
-              <small>El modo directo requiere Presenta Bridge para dibujar sobre PowerPoint. La conexión con el celular continúa viajando por Internet.</small>
+              <small>Instala Presenta Bridge 0.7 y elige en su ventana la pantalla donde se proyecta PowerPoint. La conexión con el celular continúa viajando por Internet.</small>
             </div>
           ) : (
             <>
@@ -924,7 +924,7 @@ export default function Home() {
             <label htmlFor="bridge-code">Contraseña del Bridge</label>
             <input id="bridge-code" inputMode="text" autoCapitalize="characters" autoComplete="off" value={formatBridgePassword(bridgeInput)} onChange={(event) => setBridgeInput(normalizeBridgePassword(event.target.value))} placeholder="ABCD EFGH" autoFocus />
             <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
-            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe" download>Descargar instalador para Windows</a>
+            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe?v=070" download>Descargar Presenta Bridge 0.7 para Windows</a>
             <small>El Bridge es opcional y sólo se usa para controlar directamente otras aplicaciones de Windows. La conexión entre las dos PWA funciona por Internet sin él.</small>
           </section>
         </div>

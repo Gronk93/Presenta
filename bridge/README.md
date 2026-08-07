@@ -1,24 +1,25 @@
 # Presenta Bridge para Windows
 
-Presenta Bridge conecta PowerPoint y la pantalla de Windows con Presenta Android por Bluetooth directo. También conserva el enlace local con la PWA en `127.0.0.1:51794`. Ambos modos exigen una contraseña aleatoria de ocho caracteres que puede renovarse desde el Bridge.
+Presenta Bridge coloca el láser, el lápiz, las pizarras y la pantalla negra sobre PowerPoint en Windows. La PWA recibe los controles del celular por Internet y los entrega localmente al Bridge mediante `127.0.0.1:51794`, usando una contraseña aleatoria de ocho caracteres que puede renovarse desde el Bridge.
 
 ## Funciones
 
 - Envía flecha izquierda/derecha a la aplicación que esté presentando.
-- Dibuja un láser digital sobre la pantalla seleccionada.
+- Dibuja un láser digital en vivo sobre la pantalla seleccionada.
+- Permite escribir sobre PowerPoint o cubrirlo con una pizarra blanca o negra.
 - Activa una capa negra temporal sin modificar la presentación.
 - Se minimiza a la bandeja del sistema.
-- Busca automáticamente celulares Android emparejados y recupera el enlace Bluetooth tras una interferencia.
-- Muestra el modelo del celular conectado, el transporte y la hora de la última señal.
+- Mantiene la capa de anotación por encima de PowerPoint en pantalla completa.
+- Muestra el dispositivo conectado, el transporte y la hora de la última señal.
 - No requiere permisos de administrador ni dependencias externas.
 
 ## Uso
 
 1. Ejecuta `dist/PresentaBridgeSetup.exe` en Windows y selecciona **Instalar y abrir**.
 2. Selecciona la pantalla donde se proyectará la presentación.
-3. Empareja una sola vez Android y Windows desde la configuración Bluetooth.
-4. Instala Presenta Android, escribe la contraseña que muestra el Bridge y pulsa **Conectar**.
-5. Opcionalmente, en la vista receptora de la PWA selecciona **Conectar Bridge** e ingresa la misma contraseña.
-6. Mantén PowerPoint, el PDF o el navegador como ventana activa durante la presentación.
+3. Abre la PWA de Presenta en la computadora y conecta el celular con el código de sala.
+4. En la vista de la computadora selecciona **Conectar Bridge** e ingresa la contraseña del Bridge.
+5. Abre PowerPoint y pulsa **Presentar PowerPoint directamente**.
+6. Usa desde el celular el láser, lápiz, pizarra blanca/negra o pantalla negra.
 
 El Bridge está enfocado inicialmente en Windows 10/11 con Edge o Chrome.

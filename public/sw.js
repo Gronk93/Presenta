@@ -1,4 +1,4 @@
-const CACHE_NAME = "presenta-v6";
+const CACHE_NAME = "presenta-v7";
 const APP_SHELL = ["/", "/?remote=1", "/manifest.webmanifest", "/favicon.svg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {

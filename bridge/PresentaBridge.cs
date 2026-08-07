@@ -159,7 +159,7 @@ namespace PresentaBridge
 
             var helpLabel = new Label
             {
-                Text = "1. Empareja Android en Windows  ·  2. Abre Presenta Android  ·  3. Escribe esta contraseña",
+                Text = "1. Abre Presenta en la computadora  ·  2. Conecta el celular por Internet  ·  3. Escribe esta contraseña en la PWA",
                 AutoSize = false,
                 Location = new Point(29, 363),
                 Size = new Size(453, 38),
@@ -371,12 +371,15 @@ namespace PresentaBridge
         private const int WS_EX_TRANSPARENT = 0x20;
         private const int WS_EX_TOOLWINDOW = 0x80;
         private const int WS_EX_NOACTIVATE = 0x08000000;
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_NOACTIVATE = 0x0010;
+        private const uint SWP_SHOWWINDOW = 0x0040;
+        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         private double pointerX = .5;
         private double pointerY = .5;
         private double targetPointerX = .5;
         private double targetPointerY = .5;
-        private double pointerVelocityX;
-        private double pointerVelocityY;
         private bool laserActive;
         private bool pointerVisible;
         private bool blackoutActive;
@@ -407,17 +410,12 @@ namespace PresentaBridge
             {
                 double distanceX = targetPointerX - pointerX;
                 double distanceY = targetPointerY - pointerY;
-                pointerVelocityX = pointerVelocityX * .54 + distanceX * .25;
-                pointerVelocityY = pointerVelocityY * .54 + distanceY * .25;
-                pointerX = Math.Max(0, Math.Min(1, pointerX + pointerVelocityX));
-                pointerY = Math.Max(0, Math.Min(1, pointerY + pointerVelocityY));
-                if (Math.Abs(distanceX) < .00035 && Math.Abs(distanceY) < .00035
-                    && Math.Abs(pointerVelocityX) < .00025 && Math.Abs(pointerVelocityY) < .00025)
+                pointerX = Math.Max(0, Math.Min(1, pointerX + distanceX * .56));
+                pointerY = Math.Max(0, Math.Min(1, pointerY + distanceY * .56));
+                if (Math.Abs(distanceX) < .00025 && Math.Abs(distanceY) < .00025)
                 {
                     pointerX = targetPointerX;
                     pointerY = targetPointerY;
-                    pointerVelocityX = 0;
-                    pointerVelocityY = 0;
                     pointerMotionTimer.Stop();
                 }
                 Invalidate();
@@ -434,6 +432,9 @@ namespace PresentaBridge
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
         protected override CreateParams CreateParams
         {
@@ -452,6 +453,22 @@ namespace PresentaBridge
                 Screen[] screens = Screen.AllScreens;
                 if (index < 0 || index >= screens.Length) index = 0;
                 Bounds = screens[index].Bounds;
+                EnsureTopmostCore();
+                Invalidate();
+            });
+        }
+
+        private void EnsureTopmostCore()
+        {
+            if (!Visible) Show();
+            SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+
+        public void EnsureTopmost()
+        {
+            RunOnUi(delegate
+            {
+                EnsureTopmostCore();
                 Invalidate();
             });
         }
@@ -478,6 +495,7 @@ namespace PresentaBridge
 
         private void BeginPointerMotion()
         {
+            EnsureTopmostCore();
             pointerVisible = laserActive;
             pointerIdleTimer.Stop();
             pointerIdleTimer.Start();
@@ -486,18 +504,23 @@ namespace PresentaBridge
 
         public void SetLaser(bool active)
         {
-            laserActive = active;
             RunOnUi(delegate
             {
+                laserActive = active;
                 if (!active) pointerVisible = false;
+                EnsureTopmostCore();
                 Invalidate();
             });
         }
 
         public void SetBlackout(bool active)
         {
-            blackoutActive = active;
-            RunOnUi(Invalidate);
+            RunOnUi(delegate
+            {
+                blackoutActive = active;
+                EnsureTopmostCore();
+                Invalidate();
+            });
         }
 
         public void SetBoard(string mode)
@@ -506,6 +529,7 @@ namespace PresentaBridge
             {
                 if (mode != "transparent" && mode != "white" && mode != "black") mode = "transparent";
                 boardMode = mode;
+                EnsureTopmostCore();
                 Invalidate();
             });
         }
@@ -515,6 +539,7 @@ namespace PresentaBridge
             RunOnUi(delegate
             {
                 drawingStrokes.Clear();
+                EnsureTopmostCore();
                 Invalidate();
             });
         }
@@ -523,6 +548,7 @@ namespace PresentaBridge
         {
             RunOnUi(delegate
             {
+                EnsureTopmostCore();
                 float normalizedX = (float)Math.Max(0, Math.Min(1, x));
                 float normalizedY = (float)Math.Max(0, Math.Min(1, y));
                 if (tool == "eraser")
@@ -571,6 +597,7 @@ namespace PresentaBridge
             {
                 safetyTimer.Stop();
                 safetyTimer.Start();
+                EnsureTopmostCore();
             });
         }
 
@@ -597,15 +624,11 @@ namespace PresentaBridge
             if (!laserActive || !pointerVisible) return;
             float x = (float)(pointerX * ClientSize.Width);
             float y = (float)(pointerY * ClientSize.Height);
-            using (var glow = new SolidBrush(Color.FromArgb(72, 237, 68, 88)))
-            using (var middle = new SolidBrush(Color.FromArgb(150, 237, 68, 88)))
-            using (var core = new SolidBrush(Color.FromArgb(255, 239, 48, 70)))
-            using (var white = new Pen(Color.White, 2.5f))
+            using (var core = new SolidBrush(Color.FromArgb(255, 235, 25, 45)))
+            using (var white = new Pen(Color.White, 2f))
             {
-                e.Graphics.FillEllipse(glow, x - 22, y - 22, 44, 44);
-                e.Graphics.FillEllipse(middle, x - 13, y - 13, 26, 26);
-                e.Graphics.FillEllipse(core, x - 7, y - 7, 14, 14);
-                e.Graphics.DrawEllipse(white, x - 8, y - 8, 16, 16);
+                e.Graphics.FillEllipse(core, x - 6, y - 6, 12, 12);
+                e.Graphics.DrawEllipse(white, x - 7, y - 7, 14, 14);
             }
         }
 
@@ -696,7 +719,18 @@ namespace PresentaBridge
             if (type == "presentation")
             {
                 string action = command.ContainsKey("action") ? Convert.ToString(command["action"]) : "";
-                if (action == "start") Keyboard.ControlPowerPoint(true);
+                if (action == "start")
+                {
+                    Keyboard.ControlPowerPoint(true);
+                    overlay.EnsureTopmost();
+                    ThreadPool.QueueUserWorkItem(delegate
+                    {
+                        Thread.Sleep(850);
+                        overlay.EnsureTopmost();
+                        Thread.Sleep(900);
+                        overlay.EnsureTopmost();
+                    });
+                }
                 else if (action == "stop") Keyboard.ControlPowerPoint(false);
                 else throw new InvalidOperationException("Unknown presentation action");
                 return;
@@ -836,7 +870,7 @@ namespace PresentaBridge
                 string deviceName = auth.ContainsKey("name") ? Convert.ToString(auth["name"]) : candidate.Name;
                 string platform = auth.ContainsKey("platform") ? Convert.ToString(auth["platform"]) : "Android";
                 if (string.IsNullOrWhiteSpace(deviceName)) deviceName = candidate.Name;
-                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.6.0\"}");
+                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.7.0\"}");
                 SavePreferredAddress(candidate.Address);
                 deviceStatus(deviceName, platform + " · Bluetooth");
                 status("Bluetooth conectado · " + deviceName, true);
@@ -1091,7 +1125,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.6.0\",\"ready\":true,\"bluetooth\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.7.0\",\"ready\":true,\"bluetooth\":true}");
                     return;
                 }
 
