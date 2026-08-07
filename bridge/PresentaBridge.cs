@@ -5,7 +5,9 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -45,21 +47,24 @@ namespace PresentaBridge
         private readonly Label deviceLabel;
         private readonly Label codeLabel;
         private readonly ComboBox screenPicker;
-        private readonly string pairingCode;
+        private string pairingCode;
+        private readonly string pairingCodePath;
         private readonly EventWaitHandle showEvent;
         private readonly Thread showThread;
+        private readonly BluetoothBridge bluetooth;
         private volatile bool exitRequested;
 
         public BridgeForm(EventWaitHandle showEvent)
         {
             this.showEvent = showEvent;
-            pairingCode = LoadOrCreatePairingCode();
+            pairingCodePath = GetPairingCodePath();
+            pairingCode = LoadOrCreatePairingCode(pairingCodePath);
             Text = "Presenta Bridge";
             Icon = SystemIcons.Application;
             BackColor = Color.FromArgb(243, 240, 232);
             ForeColor = Color.FromArgb(23, 28, 37);
             Font = new Font("Segoe UI", 9.5f, FontStyle.Regular, GraphicsUnit.Point);
-            ClientSize = new Size(470, 355);
+            ClientSize = new Size(510, 425);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -75,7 +80,7 @@ namespace PresentaBridge
 
             var title = new Label
             {
-                Text = "Conecta la PWA con tu pantalla",
+                Text = "Conecta Android con tu pantalla",
                 AutoSize = true,
                 Location = new Point(25, 55),
                 Font = new Font("Segoe UI Semibold", 20f, FontStyle.Bold)
@@ -83,7 +88,7 @@ namespace PresentaBridge
 
             var codeCaption = new Label
             {
-                Text = "CÓDIGO DEL BRIDGE",
+                Text = "CONTRASEÑA DEL BRIDGE",
                 AutoSize = true,
                 Location = new Point(29, 115),
                 ForeColor = Color.FromArgb(110, 113, 111),
@@ -98,25 +103,28 @@ namespace PresentaBridge
                 Font = new Font("Consolas", 27f, FontStyle.Bold)
             };
 
-            var copyButton = MakeButton("Copiar código", new Point(292, 137), new Size(145, 41));
+            var copyButton = MakeButton("Copiar", new Point(318, 137), new Size(76, 41));
             copyButton.Click += delegate
             {
                 Clipboard.SetText(pairingCode);
-                statusLabel.Text = "Código copiado";
+                statusLabel.Text = "Contraseña copiada";
             };
+
+            var renewButton = MakeButton("Cambiar", new Point(400, 137), new Size(82, 41));
+            renewButton.Click += delegate { RenewPairingCode(); };
 
             var screenCaption = new Label
             {
                 Text = "Pantalla donde aparecerá el láser",
                 AutoSize = true,
-                Location = new Point(29, 205),
+                Location = new Point(29, 210),
                 ForeColor = Color.FromArgb(110, 113, 111)
             };
 
             screenPicker = new ComboBox
             {
-                Location = new Point(29, 228),
-                Size = new Size(278, 34),
+                Location = new Point(29, 233),
+                Size = new Size(315, 34),
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
             PopulateScreens();
@@ -125,16 +133,16 @@ namespace PresentaBridge
                 if (screenPicker.SelectedIndex >= 0) overlay.UseScreen(screenPicker.SelectedIndex);
             };
 
-            var hideButton = MakeButton("Ocultar", new Point(320, 226), new Size(117, 36));
+            var hideButton = MakeButton("Ocultar", new Point(358, 231), new Size(124, 36));
             hideButton.Click += delegate { Hide(); };
 
             deviceLabel = new Label
             {
-                Text = "Celular: esperando conexión",
+                Text = "Bluetooth: buscando un Android emparejado…",
                 AutoSize = false,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Location = new Point(29, 276),
-                Size = new Size(408, 22),
+                Location = new Point(29, 290),
+                Size = new Size(453, 24),
                 ForeColor = Color.FromArgb(110, 113, 111),
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Bold)
             };
@@ -144,12 +152,22 @@ namespace PresentaBridge
                 Text = "Iniciando servicio local…",
                 AutoSize = false,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Location = new Point(29, 310),
-                Size = new Size(408, 22),
+                Location = new Point(29, 324),
+                Size = new Size(453, 24),
                 ForeColor = Color.FromArgb(22, 122, 89)
             };
 
-            Controls.AddRange(new Control[] { header, title, codeCaption, codeLabel, copyButton, screenCaption, screenPicker, hideButton, deviceLabel, statusLabel });
+            var helpLabel = new Label
+            {
+                Text = "1. Empareja Android en Windows  ·  2. Abre Presenta Android  ·  3. Escribe esta contraseña",
+                AutoSize = false,
+                Location = new Point(29, 363),
+                Size = new Size(453, 38),
+                ForeColor = Color.FromArgb(110, 113, 111),
+                Font = new Font("Segoe UI", 8.2f)
+            };
+
+            Controls.AddRange(new Control[] { header, title, codeCaption, codeLabel, copyButton, renewButton, screenCaption, screenPicker, hideButton, deviceLabel, statusLabel, helpLabel });
 
             overlay = new OverlayForm();
             overlay.UseScreen(0);
@@ -157,7 +175,8 @@ namespace PresentaBridge
 
             var menu = new ContextMenuStrip();
             menu.Items.Add("Abrir Presenta Bridge", null, delegate { ShowWindow(); });
-            menu.Items.Add("Copiar código", null, delegate { Clipboard.SetText(pairingCode); });
+            menu.Items.Add("Copiar contraseña", null, delegate { Clipboard.SetText(pairingCode); });
+            menu.Items.Add("Cambiar contraseña", null, delegate { RenewPairingCode(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Salir", null, delegate { exitRequested = true; Close(); });
 
@@ -170,8 +189,11 @@ namespace PresentaBridge
             };
             trayIcon.DoubleClick += delegate { ShowWindow(); };
 
-            server = new BridgeServer(pairingCode, overlay, SetBridgeStatus, SetDeviceStatus);
+            var commands = new CommandRouter(overlay, SetDeviceStatus);
+            server = new BridgeServer(delegate { return pairingCode; }, commands, SetBridgeStatus);
             server.Start();
+            bluetooth = new BluetoothBridge(delegate { return pairingCode; }, commands, SetBridgeStatus, SetDeviceStatus);
+            bluetooth.Start();
             showThread = new Thread(ShowSignalLoop) { IsBackground = true, Name = "Presenta Bridge Show Signal" };
             showThread.Start();
         }
@@ -252,6 +274,7 @@ namespace PresentaBridge
             exitRequested = true;
             showEvent.Set();
             server.Dispose();
+            bluetooth.Dispose();
             overlay.Close();
             trayIcon.Visible = false;
             trayIcon.Dispose();
@@ -264,31 +287,74 @@ namespace PresentaBridge
             if (WindowState == FormWindowState.Minimized) Hide();
         }
 
-        private static string LoadOrCreatePairingCode()
+        private void RenewPairingCode()
+        {
+            pairingCode = CreatePairingCode();
+            SavePairingCode(pairingCodePath, pairingCode);
+            codeLabel.Text = FormatCode(pairingCode);
+            bluetooth.Restart();
+            deviceLabel.Text = "Bluetooth: clave renovada; esperando reconexión…";
+            deviceLabel.ForeColor = Color.FromArgb(110, 113, 111);
+            statusLabel.Text = "Contraseña cambiada. Escríbela de nuevo en Android o en la página.";
+            statusLabel.ForeColor = Color.FromArgb(22, 122, 89);
+        }
+
+        private static string GetPairingCodePath()
         {
             string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Presenta");
-            string path = Path.Combine(folder, "bridge-code.txt");
+            return Path.Combine(folder, "bridge-password.txt");
+        }
+
+        private static string LoadOrCreatePairingCode(string path)
+        {
             try
             {
                 if (File.Exists(path))
                 {
                     string existing = File.ReadAllText(path).Trim();
-                    if (existing.Length == 6) return existing;
+                    if (IsValidPairingCode(existing)) return existing;
                 }
-                Directory.CreateDirectory(folder);
-                string created = new Random().Next(100000, 1000000).ToString();
-                File.WriteAllText(path, created);
+                string created = CreatePairingCode();
+                SavePairingCode(path, created);
                 return created;
             }
             catch
             {
-                return new Random().Next(100000, 1000000).ToString();
+                return CreatePairingCode();
             }
+        }
+
+        private static void SavePairingCode(string path, string value)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllText(path, value);
+            }
+            catch { }
+        }
+
+        private static string CreatePairingCode()
+        {
+            const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+            var bytes = new byte[8];
+            using (var random = RandomNumberGenerator.Create()) random.GetBytes(bytes);
+            var result = new char[8];
+            for (int i = 0; i < result.Length; i++) result[i] = alphabet[bytes[i] & 31];
+            return new string(result);
+        }
+
+        private static bool IsValidPairingCode(string value)
+        {
+            if (value == null || value.Length != 8) return false;
+            foreach (char item in value)
+                if (!(item >= 'A' && item <= 'Z') && !(item >= '2' && item <= '9')) return false;
+            return true;
         }
 
         private static string FormatCode(string code)
         {
-            return code.Substring(0, 3) + "  " + code.Substring(3);
+            return code.Substring(0, 4) + "  " + code.Substring(4);
         }
     }
 
@@ -577,24 +643,391 @@ namespace PresentaBridge
         }
     }
 
+    internal sealed class CommandRouter
+    {
+        private readonly OverlayForm overlay;
+        private readonly Action<string, string> deviceStatus;
+
+        public CommandRouter(OverlayForm overlay, Action<string, string> deviceStatus)
+        {
+            this.overlay = overlay;
+            this.deviceStatus = deviceStatus;
+        }
+
+        public void Execute(Dictionary<string, object> command)
+        {
+            overlay.Touch();
+            string type = command.ContainsKey("type") ? Convert.ToString(command["type"]) : "";
+            if (type == "ping") return;
+            if (type == "device")
+            {
+                string name = command.ContainsKey("name") ? Convert.ToString(command["name"]) : "Celular";
+                string platform = command.ContainsKey("platform") ? Convert.ToString(command["platform"]) : "Móvil";
+                if (name.Length > 48) name = name.Substring(0, 48);
+                if (platform.Length > 32) platform = platform.Substring(0, 32);
+                deviceStatus(name, platform);
+                return;
+            }
+            if (type == "pointer")
+            {
+                bool relative = command.ContainsKey("relative") && Convert.ToBoolean(command["relative"]);
+                if (relative && command.ContainsKey("dx") && command.ContainsKey("dy"))
+                    overlay.MovePointer(Convert.ToDouble(command["dx"]), Convert.ToDouble(command["dy"]));
+                else
+                    overlay.SetPointer(Convert.ToDouble(command["x"]), Convert.ToDouble(command["y"]));
+                return;
+            }
+            if (type == "laser")
+            {
+                overlay.SetLaser(Convert.ToBoolean(command["active"]));
+                return;
+            }
+            if (type == "blackout")
+            {
+                overlay.SetBlackout(Convert.ToBoolean(command["active"]));
+                return;
+            }
+            if (type == "slide")
+            {
+                int direction = Convert.ToInt32(command["direction"]);
+                Keyboard.Send(direction >= 0 ? Keyboard.VK_RIGHT : Keyboard.VK_LEFT);
+                return;
+            }
+            if (type == "presentation")
+            {
+                string action = command.ContainsKey("action") ? Convert.ToString(command["action"]) : "";
+                if (action == "start") Keyboard.ControlPowerPoint(true);
+                else if (action == "stop") Keyboard.ControlPowerPoint(false);
+                else throw new InvalidOperationException("Unknown presentation action");
+                return;
+            }
+            if (type == "board")
+            {
+                overlay.SetBoard(Convert.ToString(command["mode"]));
+                return;
+            }
+            if (type == "clear-drawing")
+            {
+                overlay.ClearDrawing();
+                return;
+            }
+            if (type == "pen")
+            {
+                overlay.ApplyPen(
+                    Convert.ToString(command["phase"]),
+                    Convert.ToString(command["id"]),
+                    Convert.ToDouble(command["x"]),
+                    Convert.ToDouble(command["y"]),
+                    Convert.ToString(command["color"]),
+                    Convert.ToSingle(command["width"]),
+                    Convert.ToString(command["tool"]));
+                return;
+            }
+            throw new InvalidOperationException("Unknown command");
+        }
+    }
+
+    internal sealed class BluetoothBridge : IDisposable
+    {
+        public static readonly Guid ServiceId = new Guid("A52F7B13-6C89-4E28-9D14-8BFD76C21940");
+        private readonly Func<string> password;
+        private readonly CommandRouter commands;
+        private readonly Action<string, bool> status;
+        private readonly Action<string, string> deviceStatus;
+        private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+        private readonly string preferredDevicePath;
+        private Thread worker;
+        private volatile bool running;
+        private volatile int generation;
+        private Socket activeSocket;
+
+        public BluetoothBridge(Func<string> password, CommandRouter commands, Action<string, bool> status, Action<string, string> deviceStatus)
+        {
+            this.password = password;
+            this.commands = commands;
+            this.status = status;
+            this.deviceStatus = deviceStatus;
+            preferredDevicePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Presenta", "bluetooth-device.txt");
+        }
+
+        public void Start()
+        {
+            if (running) return;
+            running = true;
+            worker = new Thread(ConnectLoop) { IsBackground = true, Name = "Presenta Bluetooth" };
+            worker.Start();
+        }
+
+        public void Restart()
+        {
+            generation++;
+            CloseActiveSocket();
+        }
+
+        private void ConnectLoop()
+        {
+            status("Bluetooth activo · abre Presenta en Android", true);
+            while (running)
+            {
+                bool foundPhone = false;
+                foreach (BluetoothDevice candidate in BluetoothDevices.FindPairedPhones(ReadPreferredAddress()))
+                {
+                    if (!running) return;
+                    foundPhone = true;
+                    int attemptGeneration = generation;
+                    Socket socket = null;
+                    try
+                    {
+                        socket = new Socket((AddressFamily)32, SocketType.Stream, (ProtocolType)3);
+                        activeSocket = socket;
+                        IAsyncResult attempt = socket.BeginConnect(new BluetoothEndPoint(candidate.Address, ServiceId), null, null);
+                        if (!attempt.AsyncWaitHandle.WaitOne(6500) || attemptGeneration != generation)
+                        {
+                            socket.Close();
+                            continue;
+                        }
+                        socket.EndConnect(attempt);
+                        socket.ReceiveTimeout = 16000;
+                        socket.SendTimeout = 6000;
+                        HandleConnection(socket, candidate);
+                    }
+                    catch (SocketException) { }
+                    catch (IOException) { }
+                    catch (ObjectDisposedException) { }
+                    catch (Exception error)
+                    {
+                        if (running) status("Bluetooth: " + error.Message, false);
+                    }
+                    finally
+                    {
+                        if (ReferenceEquals(activeSocket, socket)) activeSocket = null;
+                        try { if (socket != null) socket.Close(); } catch { }
+                    }
+                }
+
+                if (running)
+                {
+                    status(foundPhone
+                        ? "Bluetooth listo · abre la app Android para conectar"
+                        : "Bluetooth listo · primero empareja el celular en Windows", true);
+                    for (int i = 0; i < 10 && running; i++) Thread.Sleep(500);
+                }
+            }
+        }
+
+        private void HandleConnection(Socket socket, BluetoothDevice candidate)
+        {
+            using (var stream = new NetworkStream(socket, false))
+            using (var reader = new StreamReader(stream, new UTF8Encoding(false), false, 4096, true))
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 4096, true) { AutoFlush = true, NewLine = "\n" })
+            {
+                string authLine = reader.ReadLine();
+                if (string.IsNullOrEmpty(authLine) || authLine.Length > 4096) return;
+                var auth = serializer.Deserialize<Dictionary<string, object>>(authLine);
+                string type = auth.ContainsKey("type") ? Convert.ToString(auth["type"]) : "";
+                string suppliedPassword = auth.ContainsKey("password") ? Convert.ToString(auth["password"]) : "";
+                if (type != "auth" || !string.Equals(suppliedPassword, password(), StringComparison.Ordinal))
+                {
+                    writer.WriteLine("{\"type\":\"auth\",\"ok\":false,\"error\":\"invalid_password\"}");
+                    status("Android encontrado · contraseña incorrecta", false);
+                    return;
+                }
+
+                string deviceName = auth.ContainsKey("name") ? Convert.ToString(auth["name"]) : candidate.Name;
+                string platform = auth.ContainsKey("platform") ? Convert.ToString(auth["platform"]) : "Android";
+                if (string.IsNullOrWhiteSpace(deviceName)) deviceName = candidate.Name;
+                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.6.0\"}");
+                SavePreferredAddress(candidate.Address);
+                deviceStatus(deviceName, platform + " · Bluetooth");
+                status("Bluetooth conectado · " + deviceName, true);
+
+                while (running && socket.Connected)
+                {
+                    string line = reader.ReadLine();
+                    if (line == null) return;
+                    if (line.Length == 0) continue;
+                    if (line.Length > 32768) throw new InvalidDataException("Comando Bluetooth demasiado grande");
+                    var command = serializer.Deserialize<Dictionary<string, object>>(line);
+                    commands.Execute(command);
+                    string commandType = command.ContainsKey("type") ? Convert.ToString(command["type"]) : "orden";
+                    if (commandType != "ping") status("Bluetooth conectado · última orden " + DateTime.Now.ToString("HH:mm:ss"), true);
+                }
+            }
+        }
+
+        private ulong ReadPreferredAddress()
+        {
+            try
+            {
+                ulong value;
+                if (File.Exists(preferredDevicePath) && ulong.TryParse(File.ReadAllText(preferredDevicePath).Trim(), out value)) return value;
+            }
+            catch { }
+            return 0;
+        }
+
+        private void SavePreferredAddress(ulong address)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(preferredDevicePath));
+                File.WriteAllText(preferredDevicePath, address.ToString());
+            }
+            catch { }
+        }
+
+        private void CloseActiveSocket()
+        {
+            Socket socket = activeSocket;
+            if (socket == null) return;
+            try { socket.Close(); } catch { }
+        }
+
+        public void Dispose()
+        {
+            running = false;
+            generation++;
+            CloseActiveSocket();
+        }
+    }
+
+    internal sealed class BluetoothEndPoint : EndPoint
+    {
+        private readonly ulong address;
+        private readonly Guid serviceId;
+
+        public BluetoothEndPoint(ulong address, Guid serviceId)
+        {
+            this.address = address;
+            this.serviceId = serviceId;
+        }
+
+        public override AddressFamily AddressFamily { get { return (AddressFamily)32; } }
+
+        public override SocketAddress Serialize()
+        {
+            var socketAddress = new SocketAddress(AddressFamily, 40);
+            byte[] addressBytes = BitConverter.GetBytes(address);
+            for (int i = 0; i < addressBytes.Length; i++) socketAddress[8 + i] = addressBytes[i];
+            byte[] guidBytes = serviceId.ToByteArray();
+            for (int i = 0; i < guidBytes.Length; i++) socketAddress[16 + i] = guidBytes[i];
+            return socketAddress;
+        }
+
+        public override EndPoint Create(SocketAddress socketAddress)
+        {
+            return this;
+        }
+    }
+
+    internal sealed class BluetoothDevice
+    {
+        public ulong Address;
+        public string Name;
+        public uint ClassOfDevice;
+    }
+
+    internal static class BluetoothDevices
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BLUETOOTH_DEVICE_SEARCH_PARAMS
+        {
+            public int dwSize;
+            [MarshalAs(UnmanagedType.Bool)] public bool fReturnAuthenticated;
+            [MarshalAs(UnmanagedType.Bool)] public bool fReturnRemembered;
+            [MarshalAs(UnmanagedType.Bool)] public bool fReturnUnknown;
+            [MarshalAs(UnmanagedType.Bool)] public bool fReturnConnected;
+            [MarshalAs(UnmanagedType.Bool)] public bool fIssueInquiry;
+            public byte cTimeoutMultiplier;
+            public IntPtr hRadio;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct BLUETOOTH_DEVICE_INFO
+        {
+            public int dwSize;
+            public ulong Address;
+            public uint ulClassofDevice;
+            [MarshalAs(UnmanagedType.Bool)] public bool fConnected;
+            [MarshalAs(UnmanagedType.Bool)] public bool fRemembered;
+            [MarshalAs(UnmanagedType.Bool)] public bool fAuthenticated;
+            public SYSTEMTIME stLastSeen;
+            public SYSTEMTIME stLastUsed;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 248)] public string szName;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SYSTEMTIME
+        {
+            public ushort Year, Month, DayOfWeek, Day, Hour, Minute, Second, Milliseconds;
+        }
+
+        [DllImport("bthprops.cpl", SetLastError = true)]
+        private static extern IntPtr BluetoothFindFirstDevice(ref BLUETOOTH_DEVICE_SEARCH_PARAMS search, ref BLUETOOTH_DEVICE_INFO deviceInfo);
+
+        [DllImport("bthprops.cpl", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool BluetoothFindNextDevice(IntPtr findHandle, ref BLUETOOTH_DEVICE_INFO deviceInfo);
+
+        [DllImport("bthprops.cpl")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool BluetoothFindDeviceClose(IntPtr findHandle);
+
+        public static List<BluetoothDevice> FindPairedPhones(ulong preferredAddress)
+        {
+            var result = new List<BluetoothDevice>();
+            var search = new BLUETOOTH_DEVICE_SEARCH_PARAMS
+            {
+                dwSize = Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_SEARCH_PARAMS)),
+                fReturnAuthenticated = true,
+                fReturnRemembered = true,
+                fReturnConnected = true,
+                fReturnUnknown = false,
+                fIssueInquiry = false,
+                cTimeoutMultiplier = 1,
+                hRadio = IntPtr.Zero
+            };
+            var info = new BLUETOOTH_DEVICE_INFO { dwSize = Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_INFO)) };
+            IntPtr handle = BluetoothFindFirstDevice(ref search, ref info);
+            if (handle == IntPtr.Zero) return result;
+            try
+            {
+                do
+                {
+                    uint majorClass = info.ulClassofDevice & 0x1F00;
+                    if ((info.fAuthenticated || info.fRemembered) && majorClass == 0x0200)
+                        result.Add(new BluetoothDevice { Address = info.Address, Name = info.szName ?? "Android", ClassOfDevice = info.ulClassofDevice });
+                    info.dwSize = Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_INFO));
+                }
+                while (BluetoothFindNextDevice(handle, ref info));
+            }
+            finally { BluetoothFindDeviceClose(handle); }
+            result.Sort(delegate(BluetoothDevice left, BluetoothDevice right)
+            {
+                if (left.Address == preferredAddress) return -1;
+                if (right.Address == preferredAddress) return 1;
+                return string.Compare(left.Name, right.Name, StringComparison.CurrentCultureIgnoreCase);
+            });
+            return result;
+        }
+    }
+
     internal sealed class BridgeServer : IDisposable
     {
         private const int Port = 51794;
-        private readonly string pairingCode;
-        private readonly OverlayForm overlay;
+        private readonly Func<string> pairingCode;
+        private readonly CommandRouter commands;
         private readonly Action<string, bool> status;
-        private readonly Action<string, string> deviceStatus;
         private readonly HttpListener listener = new HttpListener();
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
         private Thread listenerThread;
         private volatile bool running;
 
-        public BridgeServer(string pairingCode, OverlayForm overlay, Action<string, bool> status, Action<string, string> deviceStatus)
+        public BridgeServer(Func<string> pairingCode, CommandRouter commands, Action<string, bool> status)
         {
             this.pairingCode = pairingCode;
-            this.overlay = overlay;
+            this.commands = commands;
             this.status = status;
-            this.deviceStatus = deviceStatus;
             listener.Prefixes.Add("http://127.0.0.1:" + Port + "/");
         }
 
@@ -658,7 +1091,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.5.1\",\"ready\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.6.0\",\"ready\":true,\"bluetooth\":true}");
                     return;
                 }
 
@@ -668,7 +1101,7 @@ namespace PresentaBridge
                     return;
                 }
 
-                if (context.Request.Headers["X-Presenta-Code"] != pairingCode)
+                if (!string.Equals(context.Request.Headers["X-Presenta-Code"], pairingCode(), StringComparison.Ordinal))
                 {
                     WriteJson(context, 401, "{\"error\":\"invalid_code\"}");
                     return;
@@ -677,7 +1110,7 @@ namespace PresentaBridge
                 string body;
                 using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding)) body = reader.ReadToEnd();
                 var command = serializer.Deserialize<Dictionary<string, object>>(body);
-                Execute(command);
+                commands.Execute(command);
                 status("PWA conectada · última orden " + DateTime.Now.ToString("HH:mm:ss"), true);
                 WriteJson(context, 200, "{\"ok\":true}");
             }
@@ -686,78 +1119,6 @@ namespace PresentaBridge
                 status("Error de comando: " + error.Message, false);
                 try { WriteJson(context, 400, "{\"error\":\"invalid_command\"}"); } catch { }
             }
-        }
-
-        private void Execute(Dictionary<string, object> command)
-        {
-            overlay.Touch();
-            string type = command.ContainsKey("type") ? Convert.ToString(command["type"]) : "";
-            if (type == "ping") return;
-            if (type == "device")
-            {
-                string name = command.ContainsKey("name") ? Convert.ToString(command["name"]) : "Celular";
-                string platform = command.ContainsKey("platform") ? Convert.ToString(command["platform"]) : "Móvil";
-                if (name.Length > 48) name = name.Substring(0, 48);
-                if (platform.Length > 24) platform = platform.Substring(0, 24);
-                deviceStatus(name, platform);
-                return;
-            }
-            if (type == "pointer")
-            {
-                bool relative = command.ContainsKey("relative") && Convert.ToBoolean(command["relative"]);
-                if (relative && command.ContainsKey("dx") && command.ContainsKey("dy"))
-                    overlay.MovePointer(Convert.ToDouble(command["dx"]), Convert.ToDouble(command["dy"]));
-                else
-                    overlay.SetPointer(Convert.ToDouble(command["x"]), Convert.ToDouble(command["y"]));
-                return;
-            }
-            if (type == "laser")
-            {
-                overlay.SetLaser(Convert.ToBoolean(command["active"]));
-                return;
-            }
-            if (type == "blackout")
-            {
-                overlay.SetBlackout(Convert.ToBoolean(command["active"]));
-                return;
-            }
-            if (type == "slide")
-            {
-                int direction = Convert.ToInt32(command["direction"]);
-                Keyboard.Send(direction >= 0 ? Keyboard.VK_RIGHT : Keyboard.VK_LEFT);
-                return;
-            }
-            if (type == "presentation")
-            {
-                string action = command.ContainsKey("action") ? Convert.ToString(command["action"]) : "";
-                if (action == "start") Keyboard.ControlPowerPoint(true);
-                else if (action == "stop") Keyboard.ControlPowerPoint(false);
-                else throw new InvalidOperationException("Unknown presentation action");
-                return;
-            }
-            if (type == "board")
-            {
-                overlay.SetBoard(Convert.ToString(command["mode"]));
-                return;
-            }
-            if (type == "clear-drawing")
-            {
-                overlay.ClearDrawing();
-                return;
-            }
-            if (type == "pen")
-            {
-                overlay.ApplyPen(
-                    Convert.ToString(command["phase"]),
-                    Convert.ToString(command["id"]),
-                    Convert.ToDouble(command["x"]),
-                    Convert.ToDouble(command["y"]),
-                    Convert.ToString(command["color"]),
-                    Convert.ToSingle(command["width"]),
-                    Convert.ToString(command["tool"]));
-                return;
-            }
-            throw new InvalidOperationException("Unknown command");
         }
 
         private static bool IsAllowedOrigin(string origin)

@@ -1,6 +1,7 @@
 "use client";
 
 import { PointerEvent, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
 type Mode = "loading" | "home" | "pair" | "control" | "receiver";
 type LinkState = "idle" | "waiting" | "connecting" | "connected" | "offline";
@@ -44,6 +45,15 @@ function createConnectionId() {
 function formatCode(value: string) {
   const digits = value.replace(/\D/g, "").slice(0, 6);
   return digits.length > 3 ? `${digits.slice(0, 3)} ${digits.slice(3)}` : digits;
+}
+
+function normalizeBridgePassword(value: string) {
+  return value.replace(/[^A-Za-z2-9]/g, "").toUpperCase().slice(0, 8);
+}
+
+function formatBridgePassword(value: string) {
+  const clean = normalizeBridgePassword(value);
+  return clean.length > 4 ? `${clean.slice(0, 4)} ${clean.slice(4)}` : clean;
 }
 
 function statusLabel(state: LinkState) {
@@ -183,7 +193,7 @@ export default function Home() {
     window.addEventListener("offline", onOffline);
     window.addEventListener("beforeinstallprompt", onInstall);
     const savedBridgeCode = window.localStorage.getItem("presenta.bridgeCode") ?? "";
-    if (/^\d{6}$/.test(savedBridgeCode)) {
+    if (/^[A-Z2-9]{8}$/.test(savedBridgeCode)) {
       bridgeCodeRef.current = savedBridgeCode;
       setBridgeInput(savedBridgeCode);
     }
@@ -739,9 +749,9 @@ export default function Home() {
   };
 
   const connectBridge = async () => {
-    const code = bridgeInput.replace(/\D/g, "");
-    if (code.length !== 6) {
-      setToast("Escribe el código de seis dígitos del Bridge");
+    const code = normalizeBridgePassword(bridgeInput);
+    if (!/^[A-Z2-9]{8}$/.test(code)) {
+      setToast("Escribe la contraseña de ocho caracteres del Bridge");
       return;
     }
     bridgeCodeRef.current = code;
@@ -769,6 +779,7 @@ export default function Home() {
             <div className="brand"><span className="brand-mark" aria-hidden="true"><span /></span><span>Presenta</span></div>
             <div className="landing-nav">
               <span>Windows + Android</span>
+              <a href="/downloads/PresentaAndroid.apk" download>Descargar Android</a>
               <a href="/downloads/PresentaBridgeSetup.exe" download>Descargar Bridge</a>
             </div>
           </header>
@@ -777,10 +788,11 @@ export default function Home() {
             <div className="landing-copy">
               <span className="eyebrow">CONTROL REMOTO PARA PRESENTACIONES</span>
               <h1>Presenta con libertad.<br /><em>Tu celular lleva el control.</em></h1>
-              <p>Elige una pantalla o ventana en tu computadora, conecta Android con un código y controla diapositivas, puntero láser y pantalla negra desde cualquier lugar de la sala.</p>
+              <p>Controla PowerPoint, el puntero láser y el lápiz desde Android. Con la app nativa, el celular se enlaza directamente por Bluetooth, sin Internet ni Wi‑Fi.</p>
               <div className="landing-actions">
                 <button className="landing-primary" onClick={startPresentation}>Iniciar presentación <span>→</span></button>
-                <a href="/?remote=1">Abrir control del celular</a>
+                <a href="/downloads/PresentaAndroid.apk" download>Instalar app Android</a>
+                <Link href="/?remote=1">Abrir control del celular</Link>
               </div>
               <div className="landing-trust"><span><i />Sin cables</span><span><i />Sin subir archivos</span><span><i />Reconexión automática</span></div>
             </div>
@@ -803,8 +815,8 @@ export default function Home() {
 
           <div className="landing-steps">
             <article><span>01</span><div><strong>Elige qué presentar</strong><p>Una pantalla, una ventana de PowerPoint o una pestaña.</p></div></article>
-            <article><span>02</span><div><strong>Conecta el celular</strong><p>Escribe el código de seis dígitos en la PWA.</p></div></article>
-            <article><span>03</span><div><strong>Muévete con libertad</strong><p>Avanza, señala y recupera la conexión automáticamente.</p></div></article>
+            <article><span>02</span><div><strong>Empareja por Bluetooth</strong><p>Instala Presenta Android y escribe la contraseña del Bridge.</p></div></article>
+            <article><span>03</span><div><strong>Muévete con libertad</strong><p>Avanza, señala y reconecta incluso después de bloquear el celular.</p></div></article>
           </div>
         </section>
       )}
@@ -890,7 +902,7 @@ export default function Home() {
 
           <div className="connection-overview" aria-label="Estado de conexiones">
             <div className={`connection-device ${remoteDevice && linkState === "connected" ? "is-connected" : ""}`}><i /><span>Celular</span><strong>{remoteDevice?.name ?? "Esperando conexión"}</strong><small>{remoteDevice ? `${remoteDevice.platform} · última señal ${remoteDevice.lastSeen.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Escribe el código de la sala en la PWA"}</small></div>
-            <div className={`connection-device ${bridgeState === "connected" ? "is-connected" : ""}`}><i /><span>Bridge de Windows</span><strong>{bridgeState === "connected" ? "Recibiendo órdenes" : bridgeState === "detected" ? "Detectado, falta el código" : "Sin conectar"}</strong><small>{bridgeState === "connected" ? "PowerPoint, láser y anotaciones habilitados" : "Abre Bridge e ingresa su código de seis dígitos"}</small></div>
+            <div className={`connection-device ${bridgeState === "connected" ? "is-connected" : ""}`}><i /><span>Bridge de Windows</span><strong>{bridgeState === "connected" ? "Recibiendo órdenes" : bridgeState === "detected" ? "Detectado, falta la contraseña" : "Sin conectar"}</strong><small>{bridgeState === "connected" ? "PowerPoint, láser y anotaciones habilitados" : "Abre Bridge e ingresa su contraseña de ocho caracteres"}</small></div>
           </div>
 
           <div className="screen-share-controls">
@@ -929,12 +941,13 @@ export default function Home() {
             <button className="dialog-close" onClick={() => setShowBridgeDialog(false)} aria-label="Cerrar">×</button>
             <span className="step-pill">WINDOWS · PRESENTA BRIDGE</span>
             <h2 id="bridge-title">Conecta el complemento</h2>
-            <p>Abre Presenta Bridge en Windows y escribe el código que aparece en su ventana.</p>
-            <label htmlFor="bridge-code">Código del Bridge</label>
-            <input id="bridge-code" inputMode="numeric" value={formatCode(bridgeInput)} onChange={(event) => setBridgeInput(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="000 000" autoFocus />
+            <p>Abre Presenta Bridge en Windows y escribe la contraseña que aparece en su ventana. Puedes renovarla desde el propio Bridge.</p>
+            <label htmlFor="bridge-code">Contraseña del Bridge</label>
+            <input id="bridge-code" inputMode="text" autoCapitalize="characters" autoComplete="off" value={formatBridgePassword(bridgeInput)} onChange={(event) => setBridgeInput(normalizeBridgePassword(event.target.value))} placeholder="ABCD EFGH" autoFocus />
             <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
             <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe" download>Descargar instalador para Windows</a>
-            <small>El complemento sólo escucha en esta computadora y valida el código antes de ejecutar órdenes.</small>
+            <a className="bridge-download" href="/downloads/PresentaAndroid.apk" download>Descargar Presenta para Android (Bluetooth)</a>
+            <small>El complemento valida la contraseña antes de ejecutar órdenes. La app Android se conecta directamente por Bluetooth, sin pasar por la página.</small>
           </section>
         </div>
       )}
