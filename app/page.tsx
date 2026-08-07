@@ -83,6 +83,8 @@ export default function Home() {
   const [slide, setSlide] = useState(1);
   const [laser, setLaser] = useState(false);
   const [blackout, setBlackout] = useState(false);
+  const [presenting, setPresenting] = useState(false);
+  const [padActive, setPadActive] = useState(false);
   const [interactionMode, setInteractionMode] = useState<"pointer" | "pen">("pointer");
   const [penColor, setPenColor] = useState<PenColor>("#ef3340");
   const [penWidth, setPenWidth] = useState<PenWidth>(7);
@@ -115,6 +117,7 @@ export default function Home() {
   const devicePresenceRef = useRef<DevicePresence>({ deviceId: "pending", name: "Este celular", platform: "Móvil" });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const presentationRef = useRef<HTMLDivElement | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
 
   const renderDrawing = useCallback(() => {
     const canvas = drawingCanvasRef.current;
@@ -211,6 +214,7 @@ export default function Home() {
   }, [toast]);
 
   useEffect(() => {
+    screenStreamRef.current = screenStream;
     if (videoRef.current) videoRef.current.srcObject = screenStream;
   }, [screenStream]);
 
@@ -220,7 +224,7 @@ export default function Home() {
     observer.observe(presentationRef.current);
     renderDrawing();
     return () => observer.disconnect();
-  }, [mode, renderDrawing]);
+  }, [boardMode, mode, renderDrawing, screenStream]);
 
   const forwardToBridge = useCallback((message: RemoteMessage | { type: "ping" }) => {
     const code = bridgeCodeRef.current;
@@ -276,13 +280,18 @@ export default function Home() {
       const next = { x: message.x, y: message.y };
       pointerPositionRef.current = next;
       setPointer(next);
+      // El Bridge recibe una posición absoluta. Así, dos pestañas abiertas o
+      // un reintento de red no suman el mismo desplazamiento dos veces.
+      if (!screenStreamRef.current) void forwardToBridge({ type: "pointer", ...next });
     }
     if (message.type === "slide") setSlide((current) => Math.max(1, current + message.direction));
     if (message.type === "laser") setLaser(message.active);
     if (message.type === "blackout") setBlackout(message.active);
+    if (message.type === "presentation") setPresenting(message.action === "start");
     if (message.type === "device") setRemoteDevice({ deviceId: message.deviceId, name: message.name, platform: message.platform, lastSeen: new Date() });
     if (message.type === "pen" || message.type === "board" || message.type === "clear-drawing") applyDrawingMessage(message);
-    void forwardToBridge(message);
+    const isVisualOverlay = message.type === "pointer" || message.type === "laser" || message.type === "blackout" || message.type === "pen" || message.type === "board" || message.type === "clear-drawing";
+    if (message.type !== "pointer" && (!isVisualOverlay || !screenStreamRef.current)) void forwardToBridge(message);
   }, [applyDrawingMessage, forwardToBridge]);
 
   useEffect(() => {
@@ -406,7 +415,7 @@ export default function Home() {
         if (!stopped) setLinkState("offline");
       } finally {
         polling = false;
-        if (!stopped) pollTimer = window.setTimeout(poll, document.visibilityState === "visible" ? 220 : 900);
+        if (!stopped) pollTimer = window.setTimeout(poll, document.visibilityState === "visible" ? 80 : 900);
       }
     };
 
@@ -468,7 +477,7 @@ export default function Home() {
     }
     const immediate = message.type === "slide" || message.type === "laser" || message.type === "blackout" || message.type === "presentation" || message.type === "board" || message.type === "clear-drawing";
     if (immediate) void flushRelayQueue();
-    else if (relayFlushTimerRef.current === null) relayFlushTimerRef.current = window.setTimeout(() => void flushRelayQueue(), 55);
+    else if (relayFlushTimerRef.current === null) relayFlushTimerRef.current = window.setTimeout(() => void flushRelayQueue(), 36);
   }, [flushRelayQueue]);
 
   const joinRoom = () => {
@@ -546,6 +555,9 @@ export default function Home() {
   };
 
   const startPointer = (event: PointerEvent<HTMLDivElement>) => {
+    if (!event.isPrimary) return;
+    event.preventDefault();
+    setPadActive(true);
     event.currentTarget.setPointerCapture(event.pointerId);
     lastPointerSample.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
     if (interactionMode === "pen") {
@@ -563,6 +575,8 @@ export default function Home() {
   };
 
   const movePointer = (event: PointerEvent<HTMLDivElement>) => {
+    if (!event.isPrimary) return;
+    event.preventDefault();
     const previous = lastPointerSample.current;
     if (!previous || previous.pointerId !== event.pointerId) return;
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -580,9 +594,11 @@ export default function Home() {
     const pixelX = event.clientX - previous.x;
     const pixelY = event.clientY - previous.y;
     lastPointerSample.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
-    const acceleration = 0.72 + Math.min(0.95, Math.hypot(pixelX, pixelY) / 22);
-    const dx = Math.max(-0.12, Math.min(0.12, (pixelX / bounds.width) * 1.35 * acceleration));
-    const dy = Math.max(-0.12, Math.min(0.12, (pixelY / bounds.height) * 1.35 * acceleration));
+    const distance = Math.hypot(pixelX, pixelY);
+    if (distance < 0.28) return;
+    const acceleration = 0.9 + Math.min(0.65, distance / 34);
+    const dx = Math.max(-0.085, Math.min(0.085, (pixelX / bounds.width) * 1.18 * acceleration));
+    const dy = Math.max(-0.085, Math.min(0.085, (pixelY / bounds.height) * 1.18 * acceleration));
     if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) return;
     const next = {
       x: Math.max(0, Math.min(1, pointerPositionRef.current.x + dx)),
@@ -606,6 +622,9 @@ export default function Home() {
   };
 
   const endPointer = (event: PointerEvent<HTMLDivElement>) => {
+    if (!event.isPrimary) return;
+    event.preventDefault();
+    setPadActive(false);
     if (interactionMode === "pen" && activeStrokeIdRef.current) {
       const bounds = event.currentTarget.getBoundingClientRect();
       sendRemote({
@@ -662,7 +681,14 @@ export default function Home() {
         return;
       }
       if (track) track.addEventListener("ended", () => setScreenStream(null), { once: true });
+      screenStreamRef.current = stream;
       setScreenStream(stream);
+      // El visor ya pinta su propio láser y anotaciones; apaga la capa nativa
+      // para que nunca aparezcan dos punteros sobre la misma imagen.
+      await forwardToBridge({ type: "laser", active: false });
+      await forwardToBridge({ type: "blackout", active: false });
+      await forwardToBridge({ type: "board", mode: "transparent" });
+      await forwardToBridge({ type: "clear-drawing" });
       setToast("Ventana lista para presentar");
     } catch {
       setToast("No se seleccionó ninguna pantalla");
@@ -671,7 +697,11 @@ export default function Home() {
 
   const stopScreenShare = () => {
     screenStream?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
     setScreenStream(null);
+    void forwardToBridge({ type: "laser", active: laser });
+    void forwardToBridge({ type: "blackout", active: blackout });
+    void forwardToBridge({ type: "board", mode: boardMode });
   };
 
   const enterFullscreen = async () => {
@@ -685,8 +715,17 @@ export default function Home() {
       setToast("Conecta Presenta Bridge para controlar PowerPoint");
       return;
     }
+    if (action === "start" && screenStreamRef.current) stopScreenShare();
     const sent = await forwardToBridge({ type: "presentation", action });
+    if (sent) setPresenting(action === "start");
     setToast(sent ? (action === "start" ? "PowerPoint inició la presentación" : "Presentación detenida") : "Abre PowerPoint y vuelve a intentarlo");
+  };
+
+  const toggleRemotePresentation = () => {
+    const next = !presenting;
+    setPresenting(next);
+    sendRemote({ type: "presentation", action: next ? "start" : "stop" });
+    setToast(next ? "Solicitando PowerPoint en pantalla completa" : "Finalizando presentación");
   };
 
   const connectBridge = async () => {
@@ -784,7 +823,7 @@ export default function Home() {
           </div>
           <div className="mobile-identity"><span>Este dispositivo</span><strong>{localDeviceName}</strong><small>{linkState === "connected" ? "Conectado por Internet con la computadora" : "Buscando la sala por Internet"}</small></div>
 
-          <div className="touch-area" onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer}>
+          <div className={`touch-area ${padActive ? "is-touching" : ""}`} onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer}>
             <span className="touch-grid" aria-hidden="true" />
             <span className="finger-dot" style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }} />
             <span className="touch-instruction">{interactionMode === "pen" ? (penTool === "eraser" ? "Desliza sobre un trazo para borrarlo" : "Escribe aquí para dibujar en la presentación") : "Úsalo como trackpad: desliza varias veces para recorrer la pantalla"}</span>
@@ -820,6 +859,7 @@ export default function Home() {
             <div><strong>{slide}</strong><span>diapositiva</span></div>
             <button className="next-button" onClick={() => changeSlide(1)} aria-label="Diapositiva siguiente">→</button>
           </div>
+          <button className={`presentation-toggle ${presenting ? "is-presenting" : ""}`} onClick={toggleRemotePresentation}>{presenting ? "Finalizar pantalla completa" : "Presentar PowerPoint en pantalla completa"}</button>
           <button className="change-room" onClick={changeRoom}>Cambiar código de conexión</button>
           {linkState !== "connected" && <p className="reconnect-note">Puedes bloquear el teléfono. Al volver, Presenta intentará reconectarse automáticamente.</p>}
         </section>
@@ -844,32 +884,32 @@ export default function Home() {
             <div className={`connection-device ${online ? "is-connected" : ""}`}><i /><span>Canal de Internet</span><strong>{online ? "Relay activo" : "Sin Internet"}</strong><small>{online ? "Recibe controles aunque el celular use otra red" : "Conecta esta computadora a Internet"}</small></div>
           </div>
 
-          <div className="screen-share-controls">
-            <button className="share-button" onClick={startScreenShare}>{screenStream ? "Cambiar ventana" : "Elegir ventana de PowerPoint"}</button>
-            {screenStream && <button onClick={enterFullscreen}>Presentar en pantalla completa</button>}
-            {screenStream && <button className="stop-share" onClick={stopScreenShare}>Dejar de compartir</button>}
-          </div>
-
-          <div className="powerpoint-guide">
-            <div><strong>Para PowerPoint</strong><span>Abre tu archivo y, en el selector, elige <b>Ventana → PowerPoint</b>. El Bridge sólo es opcional para enviar teclas directamente a PowerPoint.</span></div>
-            <div className="powerpoint-actions"><button onClick={() => void controlPowerPoint("start")}>Iniciar diapositivas</button><button onClick={() => void controlPowerPoint("stop")}>Finalizar</button></div>
-          </div>
-
-          <div ref={presentationRef} className={`presentation-canvas board-${boardMode} ${screenStream ? "has-share" : ""} ${blackout ? "is-blackout" : ""}`}>
-            {screenStream ? (
-              <video ref={videoRef} className="shared-screen" autoPlay muted playsInline />
-            ) : (
-              <div className="presentation-empty">
-                <span className="empty-screen-icon" aria-hidden="true" />
-                <h1>Elige la ventana de PowerPoint</h1>
-                <p>Selecciona <b>Ventana</b> y después PowerPoint. Presenta excluye su propia pantalla para evitar el efecto espejo.</p>
-                <button className="primary-button" onClick={startScreenShare}>Elegir ventana <span>→</span></button>
+          {!screenStream && boardMode === "transparent" ? (
+            <div className="direct-stage">
+              <span className="eyebrow">MODO RECOMENDADO</span>
+              <h1>PowerPoint directo en la pantalla</h1>
+              <p>Abre tu archivo de PowerPoint y pulsa el botón. La presentación ocupará toda la pantalla; Presenta quedará detrás y el celular seguirá controlando diapositivas, láser y lápiz.</p>
+              <div className="direct-stage-actions">
+                <button className="direct-primary" onClick={() => void controlPowerPoint("start")}>Presentar PowerPoint directamente <span>→</span></button>
+                <button onClick={startScreenShare}>Usar visor de Presenta</button>
               </div>
-            )}
-            <canvas ref={drawingCanvasRef} className="drawing-canvas" aria-label="Anotaciones de Presenta" />
-            <div className={`laser-pointer ${laser ? "" : "is-hidden"}`} style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }} />
-            {blackout && <div className="blackout-message">Pantalla en pausa</div>}
-          </div>
+              <small>El modo directo requiere Presenta Bridge para dibujar sobre PowerPoint. La conexión con el celular continúa viajando por Internet.</small>
+            </div>
+          ) : (
+            <>
+              <div className="screen-share-controls">
+                <button className="share-button" onClick={startScreenShare}>{screenStream ? "Cambiar ventana" : "Elegir ventana"}</button>
+                {screenStream && <button onClick={enterFullscreen}>Ampliar a pantalla completa</button>}
+                {screenStream && <button className="stop-share" onClick={stopScreenShare}>Cerrar visor</button>}
+              </div>
+              <div ref={presentationRef} className={`presentation-canvas board-${boardMode} ${screenStream ? "has-share" : ""} ${blackout ? "is-blackout" : ""}`}>
+                {screenStream ? <video ref={videoRef} className="shared-screen" autoPlay muted playsInline /> : <div className="presentation-empty"><h1>{boardMode === "white" ? "Pizarra blanca" : "Pizarra negra"}</h1></div>}
+                <canvas ref={drawingCanvasRef} className="drawing-canvas" aria-label="Anotaciones de Presenta" />
+                <div className={`laser-pointer ${laser ? "" : "is-hidden"}`} style={{ left: `${pointer.x * 100}%`, top: `${pointer.y * 100}%` }} />
+                {blackout && <div className="blackout-message">Pantalla en pausa</div>}
+              </div>
+            </>
+          )}
           <p className="receiver-hint">Mantén esta vista abierta. Presenta restablece automáticamente el enlace cuando el celular vuelve a estar disponible.</p>
         </section>
       )}
