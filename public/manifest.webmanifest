@@ -1,7 +1,7 @@
 {
   "name": "Presenta — Control remoto",
   "short_name": "Presenta",
-  "description": "Control remoto para presentaciones desde Android y Windows.",
+  "description": "Control remoto PWA por Internet para presentaciones desde el celular y la computadora.",
   "id": "/",
   "start_url": "/?remote=1",
   "scope": "/",

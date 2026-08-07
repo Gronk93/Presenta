@@ -29,8 +29,7 @@ type RemoteMessage =
   | { type: "board"; mode: BoardMode }
   | { type: "clear-drawing" }
   | ({ type: "device" } & DevicePresence);
-type PeerMessage = RemoteMessage | { type: "heartbeat"; sentAt: number } | { type: "heartbeat-ack"; sentAt: number };
-type SignalEnvelope = { connectionId: string; data: unknown };
+type RelayPresence = { sentAt: number; device?: DevicePresence };
 
 const ROOM_STORAGE = "presenta.remoteRoom";
 
@@ -99,9 +98,10 @@ export default function Home() {
   const [bridgeInput, setBridgeInput] = useState("");
   const [showBridgeDialog, setShowBridgeDialog] = useState(false);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
-  const [connectionRevision, setConnectionRevision] = useState(0);
-  const channelRef = useRef<RTCDataChannel | null>(null);
-  const broadcastRef = useRef<BroadcastChannel | null>(null);
+  const relayRoomRef = useRef("");
+  const relayQueueRef = useRef<RemoteMessage[]>([]);
+  const relayFlushTimerRef = useRef<number | null>(null);
+  const relayFlushingRef = useRef(false);
   const bridgeCodeRef = useRef("");
   const pointerFrame = useRef<number | null>(null);
   const pointerPositionRef = useRef({ x: 0.5, y: 0.5 });
@@ -113,7 +113,6 @@ export default function Home() {
   const strokesRef = useRef<DrawingStroke[]>([]);
   const boardModeRef = useRef<BoardMode>("transparent");
   const devicePresenceRef = useRef<DevicePresence>({ deviceId: "pending", name: "Este celular", platform: "Móvil" });
-  const reconnectTimerRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const presentationRef = useRef<HTMLDivElement | null>(null);
 
@@ -202,7 +201,6 @@ export default function Home() {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
       window.removeEventListener("beforeinstallprompt", onInstall);
-      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
     };
   }, []);
 
@@ -223,14 +221,6 @@ export default function Home() {
     renderDrawing();
     return () => observer.disconnect();
   }, [mode, renderDrawing]);
-
-  const scheduleReconnect = useCallback((delay = 700) => {
-    if (reconnectTimerRef.current) return;
-    reconnectTimerRef.current = window.setTimeout(() => {
-      reconnectTimerRef.current = null;
-      setConnectionRevision((current) => current + 1);
-    }, delay);
-  }, []);
 
   const forwardToBridge = useCallback((message: RemoteMessage | { type: "ping" }) => {
     const code = bridgeCodeRef.current;
@@ -318,217 +308,168 @@ export default function Home() {
     return () => { stopped = true; if (timer) window.clearTimeout(timer); };
   }, [forwardToBridge, mode]);
 
+  const flushRelayQueue = useCallback(() => {
+    if (relayFlushTimerRef.current !== null) {
+      window.clearTimeout(relayFlushTimerRef.current);
+      relayFlushTimerRef.current = null;
+    }
+    if (relayFlushingRef.current) return;
+
+    const sendBatch = async () => {
+      const activeRoom = relayRoomRef.current;
+      const messages = relayQueueRef.current.splice(0, 60);
+      if (!activeRoom || messages.length === 0) return;
+      relayFlushingRef.current = true;
+      let retryDelay = 35;
+      try {
+        const response = await fetch("/api/signal", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ room: activeRoom, role: "controller", kind: "commands", payload: messages }),
+        });
+        if (!response.ok) throw new Error("relay_unavailable");
+      } catch {
+        relayQueueRef.current.unshift(...messages);
+        setLinkState("offline");
+        retryDelay = 900;
+      } finally {
+        relayFlushingRef.current = false;
+        if (relayQueueRef.current.length > 0 && relayFlushTimerRef.current === null) {
+          relayFlushTimerRef.current = window.setTimeout(() => {
+            relayFlushTimerRef.current = null;
+            void sendBatch();
+          }, retryDelay);
+        }
+      }
+    };
+    void sendBatch();
+  }, []);
+
   useEffect(() => {
+    relayRoomRef.current = room;
     if (!room || (mode !== "control" && mode !== "receiver")) return;
     let stopped = false;
     let lastSignalId = 0;
+    let lastRemoteSeen = 0;
+    let polling = false;
     let pollTimer: number | undefined;
-    let heartbeatTimer: number | undefined;
-    let lastHeartbeatAck = Date.now();
-    let activeConnectionId = "";
-    let pc: RTCPeerConnection | null = null;
-    let pendingCandidates: RTCIceCandidateInit[] = [];
+    let presenceTimer: number | undefined;
+    let watchdogTimer: number | undefined;
     const role = mode === "receiver" ? "receiver" : "controller";
-    const broadcast = new BroadcastChannel(`presenta-${room}`);
-    broadcastRef.current = broadcast;
-    broadcast.onmessage = (event) => receiveMessage(event.data as RemoteMessage);
-
-    const postSignal = async (kind: "offer" | "answer" | "candidate" | "restart", data: unknown, connectionId = activeConnectionId) => {
+    const postPresence = async () => {
+      const payload: RelayPresence = {
+        sentAt: Date.now(),
+        ...(role === "controller" ? { device: devicePresenceRef.current } : {}),
+      };
       try {
-        await fetch("/api/signal", {
+        const response = await fetch("/api/signal", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ room, role, kind, payload: { connectionId, data } satisfies SignalEnvelope }),
+          body: JSON.stringify({ room, role, kind: "presence", payload }),
         });
+        if (!response.ok) throw new Error("presence_unavailable");
       } catch {
         if (!stopped) setLinkState("offline");
       }
     };
 
-    const prepareChannel = (channel: RTCDataChannel) => {
-      channelRef.current = channel;
-      channel.onopen = () => {
-        lastHeartbeatAck = Date.now();
+    const handleRelaySignal = (signal: { id: number; kind: string; payload: string }) => {
+      if (signal.kind === "presence") {
+        const presence = JSON.parse(signal.payload) as RelayPresence;
+        lastRemoteSeen = Date.now();
         setLinkState("connected");
-        if (role === "controller") channel.send(JSON.stringify({ type: "device", ...devicePresenceRef.current } satisfies RemoteMessage));
-      };
-      channel.onclose = () => {
-        if (stopped) return;
-        setLinkState("connecting");
-        if (role === "receiver") scheduleReconnect(900);
-        else void postSignal("restart", { reason: "channel-closed" }, createConnectionId());
-      };
-      channel.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data) as PeerMessage;
-          if (message.type === "heartbeat") {
-            if (channel.readyState === "open") channel.send(JSON.stringify({ type: "heartbeat-ack", sentAt: message.sentAt } satisfies PeerMessage));
-          } else if (message.type === "heartbeat-ack") {
-            lastHeartbeatAck = Date.now();
-          } else {
-            receiveMessage(message);
-          }
-        } catch { /* Ignora datos incompletos durante una reconexión. */ }
-      };
-    };
-
-    const createPeer = () => {
-      pc?.close();
-      const peer = new RTCPeerConnection({ iceServers: [] });
-      pc = peer;
-      pendingCandidates = [];
-      peer.onconnectionstatechange = () => {
-        if (peer.connectionState === "connected") setLinkState("connected");
-        if (["failed", "closed"].includes(peer.connectionState)) {
-          setLinkState("connecting");
-          if (role === "receiver") scheduleReconnect(900);
+        if (role === "receiver" && presence.device) {
+          receiveMessage({ type: "device", ...presence.device });
         }
-        if (peer.connectionState === "disconnected") {
-          setLinkState("connecting");
-          if (role === "receiver") scheduleReconnect(2200);
-        }
-      };
-      peer.onicecandidate = (event) => {
-        if (event.candidate) void postSignal("candidate", event.candidate.toJSON());
-      };
-      peer.ondatachannel = (event) => prepareChannel(event.channel);
-      return peer;
-    };
-
-    const flushCandidates = async (peer: RTCPeerConnection) => {
-      while (pendingCandidates.length && peer.remoteDescription) {
-        const candidate = pendingCandidates.shift();
-        if (candidate) await peer.addIceCandidate(candidate).catch(() => undefined);
-      }
-    };
-
-    const startReceiver = async () => {
-      setLinkState("waiting");
-      await fetch(`/api/signal?room=${room}&role=receiver`, { method: "DELETE" }).catch(() => undefined);
-      if (stopped) return;
-      activeConnectionId = createConnectionId();
-      const peer = createPeer();
-      const channel = peer.createDataChannel("presenta", { ordered: true });
-      prepareChannel(channel);
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      await postSignal("offer", peer.localDescription);
-    };
-
-    const handleSignal = async (signal: { id: number; kind: string; payload: string }) => {
-      const envelope = JSON.parse(signal.payload) as SignalEnvelope;
-      if (!envelope?.connectionId) return;
-      if (signal.kind === "restart" && role === "receiver") {
-        scheduleReconnect(120);
         return;
       }
-      if (signal.kind === "offer" && role === "controller") {
-        if (envelope.connectionId === activeConnectionId && pc?.remoteDescription) return;
-        activeConnectionId = envelope.connectionId;
-        setLinkState("connecting");
-        const peer = createPeer();
-        await peer.setRemoteDescription(envelope.data as RTCSessionDescriptionInit);
-        await flushCandidates(peer);
-        const answer = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
-        await postSignal("answer", peer.localDescription);
-        return;
-      }
-      if (envelope.connectionId !== activeConnectionId) return;
-      if (signal.kind === "answer" && role === "receiver" && pc && !pc.remoteDescription) {
-        await pc.setRemoteDescription(envelope.data as RTCSessionDescriptionInit);
-        await flushCandidates(pc);
-      } else if (signal.kind === "candidate" && pc) {
-        const candidate = envelope.data as RTCIceCandidateInit;
-        if (!pc.remoteDescription) pendingCandidates.push(candidate);
-        else await pc.addIceCandidate(candidate).catch(() => undefined);
+      if (signal.kind === "commands" && role === "receiver") {
+        const messages = JSON.parse(signal.payload) as RemoteMessage[];
+        lastRemoteSeen = Date.now();
+        setLinkState("connected");
+        for (const message of messages) receiveMessage(message);
       }
     };
 
     const poll = async () => {
+      if (polling || stopped) return;
+      polling = true;
       try {
         const response = await fetch(`/api/signal?room=${room}&role=${role}&after=${lastSignalId}`, { cache: "no-store" });
-        if (response.ok) {
-          const data = await response.json() as { signals: Array<{ id: number; kind: string; payload: string }> };
-          for (const signal of data.signals) {
-            lastSignalId = Math.max(lastSignalId, signal.id);
-            await handleSignal(signal);
-          }
+        if (!response.ok) throw new Error("poll_unavailable");
+        const data = await response.json() as { signals: Array<{ id: number; kind: string; payload: string }> };
+        for (const signal of data.signals) {
+          lastSignalId = Math.max(lastSignalId, signal.id);
+          try { handleRelaySignal(signal); } catch { /* Descarta un paquete incompleto y continúa. */ }
         }
       } catch {
         if (!stopped) setLinkState("offline");
       } finally {
-        if (!stopped) pollTimer = window.setTimeout(poll, 750);
+        polling = false;
+        if (!stopped) pollTimer = window.setTimeout(poll, document.visibilityState === "visible" ? 220 : 900);
       }
     };
 
-    const start = async () => {
-      if (role === "receiver") await startReceiver();
-      else {
-        setLinkState("connecting");
-        await postSignal("restart", { reason: "controller-ready" }, createConnectionId());
-      }
-      await poll();
-      if (role === "controller") {
-        heartbeatTimer = window.setInterval(() => {
-          const channel = channelRef.current;
-          if (channel?.readyState === "open") {
-            if (Date.now() - lastHeartbeatAck > 12000) {
-              setLinkState("connecting");
-              void postSignal("restart", { reason: "heartbeat-timeout" }, createConnectionId());
-              lastHeartbeatAck = Date.now();
-            } else {
-              channel.send(JSON.stringify({ type: "heartbeat", sentAt: Date.now() } satisfies PeerMessage));
-              channel.send(JSON.stringify({ type: "device", ...devicePresenceRef.current } satisfies RemoteMessage));
-            }
-          }
-        }, 4000);
-      }
+    const wake = () => {
+      if (document.visibilityState !== "visible") return;
+      setLinkState("connecting");
+      void postPresence();
+      if (pollTimer) window.clearTimeout(pollTimer);
+      void poll();
+      if (role === "controller") void flushRelayQueue();
     };
+
+    const start = async () => {
+      setLinkState(role === "receiver" ? "waiting" : "connecting");
+      if (role === "receiver") await fetch(`/api/signal?room=${room}&role=receiver`, { method: "DELETE" }).catch(() => undefined);
+      if (stopped) return;
+      await postPresence();
+      presenceTimer = window.setInterval(() => void postPresence(), 1800);
+      watchdogTimer = window.setInterval(() => {
+        if (lastRemoteSeen && Date.now() - lastRemoteSeen > 6500) setLinkState(role === "receiver" ? "waiting" : "connecting");
+      }, 1200);
+      await poll();
+    };
+
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
     void start();
 
     return () => {
       stopped = true;
       if (pollTimer) window.clearTimeout(pollTimer);
-      if (heartbeatTimer) window.clearInterval(heartbeatTimer);
-      broadcast.close();
-      pc?.close();
-      if (channelRef.current) channelRef.current = null;
-      broadcastRef.current = null;
-    };
-  }, [connectionRevision, mode, receiveMessage, room, scheduleReconnect]);
-
-  useEffect(() => {
-    if (mode !== "control" || !room) return;
-    const wake = () => {
-      if (document.visibilityState !== "visible" || channelRef.current?.readyState === "open") return;
-      setLinkState("connecting");
-      void fetch("/api/signal", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          room,
-          role: "controller",
-          kind: "restart",
-          payload: { connectionId: createConnectionId(), data: { reason: "phone-resumed" } },
-        }),
-      });
-    };
-    document.addEventListener("visibilitychange", wake);
-    window.addEventListener("online", wake);
-    window.addEventListener("pageshow", wake);
-    return () => {
+      if (presenceTimer) window.clearInterval(presenceTimer);
+      if (watchdogTimer) window.clearInterval(watchdogTimer);
       document.removeEventListener("visibilitychange", wake);
       window.removeEventListener("online", wake);
       window.removeEventListener("pageshow", wake);
+      relayQueueRef.current = [];
+      if (relayFlushTimerRef.current !== null) {
+        window.clearTimeout(relayFlushTimerRef.current);
+        relayFlushTimerRef.current = null;
+      }
     };
-  }, [mode, room]);
+  }, [flushRelayQueue, mode, receiveMessage, room]);
 
   const sendRemote = useCallback((message: RemoteMessage) => {
-    if (channelRef.current?.readyState === "open") channelRef.current.send(JSON.stringify(message));
-    else setLinkState("connecting");
-    broadcastRef.current?.postMessage(message);
-  }, []);
+    if (message.type === "pointer") {
+      const pending = relayQueueRef.current[relayQueueRef.current.length - 1];
+      if (pending?.type === "pointer" && pending.relative && message.relative) {
+        pending.dx = (pending.dx ?? 0) + (message.dx ?? 0);
+        pending.dy = (pending.dy ?? 0) + (message.dy ?? 0);
+        pending.x = message.x;
+        pending.y = message.y;
+      } else {
+        relayQueueRef.current.push(message);
+      }
+    } else {
+      relayQueueRef.current.push(message);
+    }
+    const immediate = message.type === "slide" || message.type === "laser" || message.type === "blackout" || message.type === "presentation" || message.type === "board" || message.type === "clear-drawing";
+    if (immediate) void flushRelayQueue();
+    else if (relayFlushTimerRef.current === null) relayFlushTimerRef.current = window.setTimeout(() => void flushRelayQueue(), 55);
+  }, [flushRelayQueue]);
 
   const joinRoom = () => {
     const normalized = roomInput.replace(/\D/g, "");
@@ -778,9 +719,8 @@ export default function Home() {
           <header className="desktop-header landing-header">
             <div className="brand"><span className="brand-mark" aria-hidden="true"><span /></span><span>Presenta</span></div>
             <div className="landing-nav">
-              <span>Windows + Android</span>
-              <a href="/downloads/PresentaAndroid.apk" download>Descargar Android</a>
-              <a href="/downloads/PresentaBridgeSetup.exe" download>Descargar Bridge</a>
+              <span>PWA · computadora + celular</span>
+              <Link href="/?remote=1">Abrir en el celular</Link>
             </div>
           </header>
 
@@ -788,13 +728,12 @@ export default function Home() {
             <div className="landing-copy">
               <span className="eyebrow">CONTROL REMOTO PARA PRESENTACIONES</span>
               <h1>Presenta con libertad.<br /><em>Tu celular lleva el control.</em></h1>
-              <p>Controla PowerPoint, el puntero láser y el lápiz desde Android. Con la app nativa, el celular se enlaza directamente por Bluetooth, sin Internet ni Wi‑Fi.</p>
+              <p>Abre Presenta en la computadora y en el celular, escribe el código de seis dígitos y controla diapositivas, láser y lápiz mediante Internet.</p>
               <div className="landing-actions">
                 <button className="landing-primary" onClick={startPresentation}>Iniciar presentación <span>→</span></button>
-                <a href="/downloads/PresentaAndroid.apk" download>Instalar app Android</a>
                 <Link href="/?remote=1">Abrir control del celular</Link>
               </div>
-              <div className="landing-trust"><span><i />Sin cables</span><span><i />Sin subir archivos</span><span><i />Reconexión automática</span></div>
+              <div className="landing-trust"><span><i />Sin Bluetooth</span><span><i />Sin instalar APK</span><span><i />Reconexión automática</span></div>
             </div>
 
             <div className="landing-product" aria-label="Vista previa de Presenta">
@@ -803,20 +742,20 @@ export default function Home() {
                 <div className="product-stage">
                   <div className="product-slide"><small>PRESENTA / EN VIVO</small><strong>Tu idea,<br />en pantalla.</strong><i /></div>
                   <div className="product-remote">
-                    <div><span>CONTROL ANDROID</span><b>847 291</b></div>
+                  <div><span>CONTROL PWA</span><b>847 291</b></div>
                     <div className="remote-pad"><i /></div>
                     <div className="remote-buttons"><span>←</span><strong>12</strong><span>→</span></div>
                   </div>
                 </div>
               </div>
-              <div className="landing-code-card"><span>CÓDIGO DE CONEXIÓN</span><strong>847 291</strong><small>Listo para Android</small></div>
+              <div className="landing-code-card"><span>CÓDIGO DE CONEXIÓN</span><strong>847 291</strong><small>Relay de Internet listo</small></div>
             </div>
           </div>
 
           <div className="landing-steps">
             <article><span>01</span><div><strong>Elige qué presentar</strong><p>Una pantalla, una ventana de PowerPoint o una pestaña.</p></div></article>
-            <article><span>02</span><div><strong>Empareja por Bluetooth</strong><p>Instala Presenta Android y escribe la contraseña del Bridge.</p></div></article>
-            <article><span>03</span><div><strong>Muévete con libertad</strong><p>Avanza, señala y reconecta incluso después de bloquear el celular.</p></div></article>
+            <article><span>02</span><div><strong>Abre la PWA móvil</strong><p>En el celular abre este mismo sitio y escribe el código de seis dígitos.</p></div></article>
+            <article><span>03</span><div><strong>Controla por Internet</strong><p>Avanza, señala y dibuja aunque los dispositivos estén en redes distintas.</p></div></article>
           </div>
         </section>
       )}
@@ -825,14 +764,14 @@ export default function Home() {
         <section className="pair-view remote-only-view">
           <div className="remote-brand"><span className="brand-mark" aria-hidden="true"><span /></span><strong>Presenta</strong><small>Control Android</small></div>
           <div className="pair-panel">
-            <span className="step-pill">CONECTAR CON WINDOWS</span>
+            <span className="step-pill">CONECTAR POR INTERNET</span>
             <h1>Escribe el código de la laptop</h1>
-            <p>La computadora mostrará seis números. Este teléfono recordará la sala para la próxima vez.</p>
+            <p>La computadora mostrará seis números. La PWA enviará los controles por Internet y recordará esta sala.</p>
             <label htmlFor="room-code">Código de seis dígitos</label>
             <input id="room-code" inputMode="numeric" autoComplete="one-time-code" value={formatCode(roomInput)} onChange={(event) => setRoomInput(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="000 000" autoFocus />
             <button className="primary-button" onClick={joinRoom}>Abrir control <span>→</span></button>
             <button className="install-control" onClick={promptInstall}>Instalar este control en el celular</button>
-            <small>No se envía el contenido de tu presentación al servidor.</small>
+            <small>Sólo se envían las órdenes del control; el contenido de la presentación permanece en tu computadora.</small>
           </div>
         </section>
       )}
@@ -843,7 +782,7 @@ export default function Home() {
             <div><span className="eyebrow">PRESENTA · CONTROL</span><h1>Sala {formatCode(room)}</h1></div>
             <span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span>
           </div>
-          <div className="mobile-identity"><span>Este dispositivo</span><strong>{localDeviceName}</strong><small>{linkState === "connected" ? "Enviando señal a la computadora" : "Buscando la computadora"}</small></div>
+          <div className="mobile-identity"><span>Este dispositivo</span><strong>{localDeviceName}</strong><small>{linkState === "connected" ? "Conectado por Internet con la computadora" : "Buscando la sala por Internet"}</small></div>
 
           <div className="touch-area" onPointerDown={startPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={endPointer}>
             <span className="touch-grid" aria-hidden="true" />
@@ -902,7 +841,7 @@ export default function Home() {
 
           <div className="connection-overview" aria-label="Estado de conexiones">
             <div className={`connection-device ${remoteDevice && linkState === "connected" ? "is-connected" : ""}`}><i /><span>Celular</span><strong>{remoteDevice?.name ?? "Esperando conexión"}</strong><small>{remoteDevice ? `${remoteDevice.platform} · última señal ${remoteDevice.lastSeen.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Escribe el código de la sala en la PWA"}</small></div>
-            <div className={`connection-device ${bridgeState === "connected" ? "is-connected" : ""}`}><i /><span>Bridge de Windows</span><strong>{bridgeState === "connected" ? "Recibiendo órdenes" : bridgeState === "detected" ? "Detectado, falta la contraseña" : "Sin conectar"}</strong><small>{bridgeState === "connected" ? "PowerPoint, láser y anotaciones habilitados" : "Abre Bridge e ingresa su contraseña de ocho caracteres"}</small></div>
+            <div className={`connection-device ${online ? "is-connected" : ""}`}><i /><span>Canal de Internet</span><strong>{online ? "Relay activo" : "Sin Internet"}</strong><small>{online ? "Recibe controles aunque el celular use otra red" : "Conecta esta computadora a Internet"}</small></div>
           </div>
 
           <div className="screen-share-controls">
@@ -912,7 +851,7 @@ export default function Home() {
           </div>
 
           <div className="powerpoint-guide">
-            <div><strong>Para PowerPoint</strong><span>Abre tu archivo y, en el selector, elige <b>Ventana → PowerPoint</b>. No elijas la pantalla donde está Presenta.</span></div>
+            <div><strong>Para PowerPoint</strong><span>Abre tu archivo y, en el selector, elige <b>Ventana → PowerPoint</b>. El Bridge sólo es opcional para enviar teclas directamente a PowerPoint.</span></div>
             <div className="powerpoint-actions"><button onClick={() => void controlPowerPoint("start")}>Iniciar diapositivas</button><button onClick={() => void controlPowerPoint("stop")}>Finalizar</button></div>
           </div>
 
@@ -946,8 +885,7 @@ export default function Home() {
             <input id="bridge-code" inputMode="text" autoCapitalize="characters" autoComplete="off" value={formatBridgePassword(bridgeInput)} onChange={(event) => setBridgeInput(normalizeBridgePassword(event.target.value))} placeholder="ABCD EFGH" autoFocus />
             <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
             <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe" download>Descargar instalador para Windows</a>
-            <a className="bridge-download" href="/downloads/PresentaAndroid.apk" download>Descargar Presenta para Android (Bluetooth)</a>
-            <small>El complemento valida la contraseña antes de ejecutar órdenes. La app Android se conecta directamente por Bluetooth, sin pasar por la página.</small>
+            <small>El Bridge es opcional y sólo se usa para controlar directamente otras aplicaciones de Windows. La conexión entre las dos PWA funciona por Internet sin él.</small>
           </section>
         </div>
       )}

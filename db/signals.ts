@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 
 let schemaReady: Promise<void> | null = null;
+let lastCleanupAt = 0;
 
 async function ensureSchema() {
   if (!schemaReady) {
@@ -26,12 +27,17 @@ async function ensureSchema() {
 export async function addSignal(room: string, role: string, kind: string, payload: string) {
   await ensureSchema();
   const now = Date.now();
-  const staleBefore = now - 10 * 60 * 1000;
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM signals WHERE created_at < ?").bind(staleBefore),
-    env.DB.prepare("INSERT INTO signals (room, role, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(room, role, kind, payload, now),
-  ]);
+  const insert = env.DB.prepare("INSERT INTO signals (room, role, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(room, role, kind, payload, now);
+  if (now - lastCleanupAt > 60_000) {
+    lastCleanupAt = now;
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM signals WHERE created_at < ?").bind(now - 10 * 60 * 1000),
+      insert,
+    ]);
+  } else {
+    await insert.run();
+  }
 }
 
 export async function clearSignals(room: string) {
