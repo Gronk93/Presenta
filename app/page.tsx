@@ -32,6 +32,12 @@ type RemoteMessage =
 type RelayPresence = { sentAt: number; device?: DevicePresence };
 
 const ROOM_STORAGE = "presenta.remoteRoom";
+const RECEIVER_ROOM_STORAGE = "presenta.receiverRoom";
+const REPLAYABLE_MESSAGE_TYPES = new Set<RemoteMessage["type"]>(["laser", "blackout", "board", "clear-drawing"]);
+
+function isReplayableMessage(message: RemoteMessage) {
+  return REPLAYABLE_MESSAGE_TYPES.has(message.type);
+}
 
 function createRoomCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
@@ -100,6 +106,7 @@ export default function Home() {
   const [bridgeInput, setBridgeInput] = useState("");
   const [showBridgeDialog, setShowBridgeDialog] = useState(false);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const [reconnectNonce, setReconnectNonce] = useState(0);
   const relayRoomRef = useRef("");
   const relayQueueRef = useRef<RemoteMessage[]>([]);
   const relayFlushTimerRef = useRef<number | null>(null);
@@ -181,7 +188,14 @@ export default function Home() {
         setMode("pair");
       }
     } else {
-      setMode("home");
+      const savedReceiverRoom = window.localStorage.getItem(RECEIVER_ROOM_STORAGE) ?? "";
+      if (/^\d{6}$/.test(savedReceiverRoom)) {
+        setRoom(savedReceiverRoom);
+        setLinkState("connecting");
+        setMode("receiver");
+      } else {
+        setMode("home");
+      }
     }
 
     setOnline(navigator.onLine);
@@ -338,7 +352,9 @@ export default function Home() {
         });
         if (!response.ok) throw new Error("relay_unavailable");
       } catch {
-        relayQueueRef.current.unshift(...messages);
+        // Los movimientos, trazos y cambios de diapositiva dejan de ser válidos
+        // cuando llegan tarde. Sólo se conservan estados que sí deben restaurarse.
+        relayQueueRef.current.unshift(...messages.filter(isReplayableMessage));
         setLinkState("offline");
         retryDelay = 900;
       } finally {
@@ -361,6 +377,7 @@ export default function Home() {
     let lastSignalId = 0;
     let lastRemoteSeen = 0;
     let polling = false;
+    let consecutiveFailures = 0;
     let pollTimer: number | undefined;
     let presenceTimer: number | undefined;
     let watchdogTimer: number | undefined;
@@ -406,22 +423,30 @@ export default function Home() {
       try {
         const response = await fetch(`/api/signal?room=${room}&role=${role}&after=${lastSignalId}`, { cache: "no-store" });
         if (!response.ok) throw new Error("poll_unavailable");
+        consecutiveFailures = 0;
         const data = await response.json() as { signals: Array<{ id: number; kind: string; payload: string }> };
         for (const signal of data.signals) {
           lastSignalId = Math.max(lastSignalId, signal.id);
           try { handleRelaySignal(signal); } catch { /* Descarta un paquete incompleto y continúa. */ }
         }
       } catch {
+        consecutiveFailures += 1;
         if (!stopped) setLinkState("offline");
       } finally {
         polling = false;
-        if (!stopped) pollTimer = window.setTimeout(poll, document.visibilityState === "visible" ? 60 : 900);
+        if (!stopped) {
+          const retryDelay = consecutiveFailures > 0
+            ? Math.min(3200, 300 * (2 ** Math.min(consecutiveFailures - 1, 4)))
+            : document.visibilityState === "visible" ? 60 : 1100;
+          pollTimer = window.setTimeout(poll, retryDelay);
+        }
       }
     };
 
     const wake = () => {
       if (document.visibilityState !== "visible") return;
       setLinkState("connecting");
+      consecutiveFailures = 0;
       void postPresence();
       if (pollTimer) window.clearTimeout(pollTimer);
       void poll();
@@ -459,9 +484,16 @@ export default function Home() {
         relayFlushTimerRef.current = null;
       }
     };
-  }, [flushRelayQueue, mode, receiveMessage, room]);
+  }, [flushRelayQueue, mode, receiveMessage, reconnectNonce, room]);
 
   const sendRemote = useCallback((message: RemoteMessage) => {
+    if ((!navigator.onLine || linkState === "offline") && !isReplayableMessage(message)) {
+      setToast("Sin Internet: la orden no se guardó para evitar que se ejecute tarde");
+      return;
+    }
+    if (isReplayableMessage(message)) {
+      relayQueueRef.current = relayQueueRef.current.filter((queued) => queued.type !== message.type);
+    }
     if (message.type === "pointer") {
       const pending = relayQueueRef.current[relayQueueRef.current.length - 1];
       if (pending?.type === "pointer" && pending.relative && message.relative) {
@@ -478,7 +510,7 @@ export default function Home() {
     const immediate = message.type === "slide" || message.type === "laser" || message.type === "blackout" || message.type === "presentation" || message.type === "board" || message.type === "clear-drawing";
     if (immediate) void flushRelayQueue();
     else if (relayFlushTimerRef.current === null) relayFlushTimerRef.current = window.setTimeout(() => void flushRelayQueue(), 36);
-  }, [flushRelayQueue]);
+  }, [flushRelayQueue, linkState]);
 
   const joinRoom = () => {
     const normalized = roomInput.replace(/\D/g, "");
@@ -492,7 +524,9 @@ export default function Home() {
   };
 
   const startPresentation = () => {
-    setRoom(createRoomCode());
+    const nextRoom = createRoomCode();
+    window.localStorage.setItem(RECEIVER_ROOM_STORAGE, nextRoom);
+    setRoom(nextRoom);
     setLinkState("idle");
     setMode("receiver");
   };
@@ -500,9 +534,26 @@ export default function Home() {
   const returnToLanding = () => {
     screenStream?.getTracks().forEach((track) => track.stop());
     setScreenStream(null);
+    window.localStorage.removeItem(RECEIVER_ROOM_STORAGE);
     setRoom("");
     setLinkState("idle");
     setMode("home");
+  };
+
+  const reconnectRoom = () => {
+    setLinkState("connecting");
+    setReconnectNonce((current) => current + 1);
+    setToast("Reconectando con el mismo código de sala");
+  };
+
+  const createNewReceiverRoom = () => {
+    const nextRoom = createRoomCode();
+    window.localStorage.setItem(RECEIVER_ROOM_STORAGE, nextRoom);
+    setRemoteDevice(null);
+    setRoom(nextRoom);
+    setLinkState("waiting");
+    setReconnectNonce((current) => current + 1);
+    setToast("Se creó un código nuevo");
   };
 
   const changeRoom = () => {
@@ -748,6 +799,8 @@ export default function Home() {
   };
 
   const bridgeLabel = bridgeState === "connected" ? "Bridge conectado" : bridgeState === "detected" ? "Bridge detectado" : bridgeState === "error" ? "Código incorrecto" : "Conectar Bridge";
+  const pwaReady = linkState === "connected" && remoteDevice !== null;
+  const bridgeReady = bridgeState === "connected";
 
   if (mode === "loading") return <main className="app-shell mode-loading"><div className="brand-mark" aria-hidden="true"><span /></div></main>;
 
@@ -792,9 +845,8 @@ export default function Home() {
           </div>
 
           <div className="landing-steps">
-            <article><span>01</span><div><strong>Elige qué presentar</strong><p>Una pantalla, una ventana de PowerPoint o una pestaña.</p></div></article>
-            <article><span>02</span><div><strong>Abre la PWA móvil</strong><p>En el celular abre este mismo sitio y escribe el código de seis dígitos.</p></div></article>
-            <article><span>03</span><div><strong>Controla por Internet</strong><p>Avanza, señala y dibuja aunque los dispositivos estén en redes distintas.</p></div></article>
+            <article><span>01</span><div><strong>Primero, conecta la PWA</strong><p>Abre Presenta en el celular y escribe el código de seis dígitos de la computadora.</p></div></article>
+            <article><span>02</span><div><strong>Después, conecta el Bridge</strong><p>Abre Presenta Bridge en Windows y escribe su contraseña para controlar PowerPoint directamente.</p></div></article>
           </div>
         </section>
       )}
@@ -874,14 +926,40 @@ export default function Home() {
           <div className="receiver-toolbar">
             <div className="room-code-block"><span>CÓDIGO PARA EL CELULAR</span><button onClick={copyCode}>{formatCode(room)} <small>Copiar</small></button></div>
             <div className="receiver-status">
-              <button className={`bridge-button bridge-${bridgeState}`} onClick={() => setShowBridgeDialog(true)}><i />{bridgeLabel}</button>
               <span className={`link-pill state-${linkState}`}><i />{statusLabel(linkState)}</span>
             </div>
           </div>
 
-          <div className="connection-overview" aria-label="Estado de conexiones">
-            <div className={`connection-device ${remoteDevice && linkState === "connected" ? "is-connected" : ""}`}><i /><span>Celular</span><strong>{remoteDevice?.name ?? "Esperando conexión"}</strong><small>{remoteDevice ? `${remoteDevice.platform} · última señal ${remoteDevice.lastSeen.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Escribe el código de la sala en la PWA"}</small></div>
-            <div className={`connection-device ${online ? "is-connected" : ""}`}><i /><span>Canal de Internet</span><strong>{online ? "Relay activo" : "Sin Internet"}</strong><small>{online ? "Recibe controles aunque el celular use otra red" : "Conecta esta computadora a Internet"}</small></div>
+          {!online && <div className="recovery-banner"><strong>Se perdió Internet.</strong><span>No cambies el código: Presenta retomará esta misma sala al volver la red.</span></div>}
+
+          <div className="setup-phases" aria-label="Configuración en dos fases">
+            <article className={`setup-phase ${pwaReady ? "is-complete" : "is-current"}`}>
+              <div className="phase-number">1</div>
+              <div className="phase-copy">
+                <span>PRIMERO · PWA</span>
+                <strong>{pwaReady ? `${remoteDevice.name} conectado` : "Conecta el celular"}</strong>
+                <p>{pwaReady ? `${remoteDevice.platform} controla esta sala por Internet.` : `Abre la PWA en el celular y escribe ${formatCode(room)}.`}</p>
+                {remoteDevice && <small>Última señal: {remoteDevice.lastSeen.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small>}
+              </div>
+              <div className="phase-actions">
+                <span className={`phase-state ${pwaReady ? "is-ready" : ""}`}>{pwaReady ? "Listo" : statusLabel(linkState)}</span>
+                {!pwaReady && <button onClick={reconnectRoom}>Reconectar ahora</button>}
+                <button className="phase-link" onClick={createNewReceiverRoom}>Código nuevo</button>
+              </div>
+            </article>
+
+            <article className={`setup-phase ${bridgeReady ? "is-complete" : pwaReady ? "is-current" : "is-locked"}`}>
+              <div className="phase-number">2</div>
+              <div className="phase-copy">
+                <span>DESPUÉS · WINDOWS</span>
+                <strong>{bridgeReady ? "Bridge conectado" : "Conecta Presenta Bridge"}</strong>
+                <p>{bridgeReady ? "PowerPoint, láser y lápiz ya pueden controlarse directamente." : "Abre el Bridge e introduce su contraseña de ocho caracteres."}</p>
+              </div>
+              <div className="phase-actions">
+                <span className={`phase-state ${bridgeReady ? "is-ready" : ""}`}>{bridgeReady ? "Listo" : bridgeLabel}</span>
+                {!bridgeReady && <button disabled={!pwaReady} onClick={() => setShowBridgeDialog(true)}>{pwaReady ? "Conectar Bridge" : "Completa fase 1"}</button>}
+              </div>
+            </article>
           </div>
 
           {!screenStream && boardMode === "transparent" ? (
@@ -890,10 +968,10 @@ export default function Home() {
               <h1>PowerPoint directo en la pantalla</h1>
               <p>Abre tu archivo de PowerPoint y pulsa el botón. La presentación ocupará toda la pantalla; Presenta quedará detrás y el celular seguirá controlando diapositivas, láser, lápiz, pizarras y pantalla negra.</p>
               <div className="direct-stage-actions">
-                <button className="direct-primary" onClick={() => void controlPowerPoint("start")}>Presentar PowerPoint directamente <span>→</span></button>
+                <button className="direct-primary" disabled={!pwaReady || !bridgeReady} onClick={() => void controlPowerPoint("start")}>{pwaReady && bridgeReady ? "Presentar PowerPoint directamente" : "Completa las dos fases"} <span>→</span></button>
                 <button onClick={startScreenShare}>Usar visor de Presenta</button>
               </div>
-              <small>Instala Presenta Bridge 0.7 y elige en su ventana la pantalla donde se proyecta PowerPoint. La conexión con el celular continúa viajando por Internet.</small>
+              <small>{pwaReady && bridgeReady ? "Todo listo. El Bridge controla Windows y la PWA del celular envía las órdenes por Internet." : "Primero conecta la PWA del celular y después el Bridge de Windows. Presenta conserva el código si la red se interrumpe."}</small>
             </div>
           ) : (
             <>

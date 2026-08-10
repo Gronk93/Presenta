@@ -182,7 +182,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .landing-code-card span { color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .56rem; letter-spacing: .12em; }
 .landing-code-card strong { font-family: var(--font-geist-mono), monospace; font-size: 1.45rem; letter-spacing: .09em; }
 .landing-code-card small { color: var(--green); font-size: .65rem; }
-.landing-steps { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); }
+.landing-steps { display: grid; grid-template-columns: repeat(2, 1fr); border-top: 1px solid var(--line); }
 .landing-steps article { min-height: 108px; display: flex; gap: 18px; padding: 23px 26px 18px 0; border-right: 1px solid var(--line); }
 .landing-steps article + article { padding-left: 26px; }
 .landing-steps article:last-child { border-right: 0; }
@@ -195,6 +195,28 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .room-code-block button { display: flex; align-items: baseline; gap: 12px; padding: 0; border: 0; background: none; font-family: var(--font-geist-mono), monospace; font-size: 2rem; font-weight: 700; letter-spacing: .09em; cursor: pointer; }
 .room-code-block small { color: var(--violet); font-family: var(--font-geist-sans); font-size: .72rem; letter-spacing: 0; }
 .receiver-status { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: .77rem; }
+.recovery-banner { display: flex; align-items: center; justify-content: center; gap: 9px; margin: -5px 0 13px; padding: 10px 14px; border: 1px solid rgba(185,68,80,.28); border-radius: 12px; background: rgba(185,68,80,.07); color: #8e3640; font-size: .76rem; }
+.setup-phases { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin: -5px 0 14px; }
+.setup-phase { position: relative; min-width: 0; display: grid; grid-template-columns: 38px minmax(0,1fr) auto; gap: 12px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.48); transition: border-color .2s, background .2s, opacity .2s; }
+.setup-phase.is-current { border-color: rgba(103,87,217,.42); background: rgba(227,222,253,.38); }
+.setup-phase.is-complete { border-color: rgba(22,122,89,.27); background: rgba(22,122,89,.055); }
+.setup-phase.is-locked { opacity: .65; }
+.phase-number { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid rgba(103,87,217,.35); border-radius: 50%; background: var(--white); color: var(--violet-dark); font-family: var(--font-geist-mono), monospace; font-size: .78rem; font-weight: 750; }
+.setup-phase.is-complete .phase-number { border-color: var(--green); background: var(--green); color: white; }
+.setup-phase.is-complete .phase-number::before { content: "✓"; }
+.setup-phase.is-complete .phase-number { font-size: 0; }
+.setup-phase.is-complete .phase-number::before { font-size: .8rem; }
+.phase-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.phase-copy > span { color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .55rem; letter-spacing: .1em; }
+.phase-copy strong { overflow: hidden; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
+.phase-copy p { margin: 2px 0 0; color: var(--muted); font-size: .67rem; line-height: 1.38; }
+.phase-copy small { margin-top: 2px; color: var(--muted); font-size: .58rem; }
+.phase-actions { display: flex; flex-direction: column; align-items: stretch; gap: 5px; }
+.phase-state { color: var(--muted); font-size: .64rem; font-weight: 700; text-align: center; }
+.phase-state.is-ready { color: var(--green); }
+.phase-actions button { min-height: 30px; padding: 6px 9px; border: 1px solid var(--violet); border-radius: 9px; background: var(--white); color: var(--violet-dark); font-size: .64rem; font-weight: 700; cursor: pointer; }
+.phase-actions button:disabled { border-color: var(--line); color: var(--muted); cursor: not-allowed; }
+.phase-actions .phase-link { min-height: auto; padding: 2px; border: 0; background: transparent; color: var(--muted); font-size: .58rem; text-decoration: underline; text-underline-offset: 2px; }
 .connection-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: -5px 0 13px; }
 .connection-device { position: relative; display: grid; grid-template-columns: 12px 1fr; column-gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.42); }
 .connection-device > i { grid-row: 1 / 4; width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: #9b9b98; box-shadow: 0 0 0 4px rgba(155,155,152,.1); }
@@ -227,6 +249,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .direct-stage-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 28px; }
 .direct-stage-actions button { min-height: 48px; padding: 12px 17px; border: 1px solid var(--line); border-radius: 13px; background: var(--white); font-weight: 700; cursor: pointer; }
 .direct-stage-actions .direct-primary { display: flex; align-items: center; gap: 30px; border-color: var(--violet); background: var(--violet); color: white; }
+.direct-stage-actions .direct-primary:disabled { border-color: #aaa6bc; background: #aaa6bc; cursor: not-allowed; box-shadow: none; }
 .direct-stage > small { max-width: 650px; margin-top: 19px; color: var(--muted); line-height: 1.5; }
 .presentation-canvas { position: relative; min-height: max(430px, calc(100svh - 300px)); overflow: hidden; border-radius: 22px; background: var(--white); border: 1px solid var(--line); box-shadow: 0 25px 60px rgba(39,32,74,.1); transition: background .25s; }
 .presentation-canvas.has-share { display: grid; place-items: center; background: #111318; }
@@ -309,6 +332,11 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
   .controller-heading h1 { font-size: 1.2rem; }
   .receiver-toolbar { align-items: flex-start; }
   .receiver-status { flex-direction: column; align-items: flex-end; gap: 7px; }
+  .recovery-banner { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .setup-phases { grid-template-columns: 1fr; }
+  .setup-phase { grid-template-columns: 38px minmax(0,1fr); }
+  .phase-actions { grid-column: 1 / -1; flex-direction: row; align-items: center; }
+  .phase-actions .phase-state { margin-right: auto; }
   .connection-overview { grid-template-columns: 1fr; }
   .bridge-button { max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .room-code-block button { font-size: 1.45rem; }
