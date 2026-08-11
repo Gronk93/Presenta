@@ -12,15 +12,20 @@ function New-RoundedPath([float]$x, [float]$y, [float]$width, [float]$height, [f
     return $path
 }
 
-function New-PresentaIcon([int]$size, [string]$path) {
+function New-PresentaIcon([int]$size, [string]$path, [bool]$maskable = $false) {
     $bitmap = New-Object System.Drawing.Bitmap($size, $size)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $graphics.Clear([System.Drawing.Color]::Transparent)
 
-    $background = New-RoundedPath 0 0 $size $size ($size * 0.225)
     $backgroundBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 23, 28, 37))
-    $graphics.FillPath($backgroundBrush, $background)
+    $background = $null
+    if ($maskable) {
+        $graphics.FillRectangle($backgroundBrush, 0, 0, $size, $size)
+    } else {
+        $background = New-RoundedPath 0 0 $size $size ($size * 0.225)
+        $graphics.FillPath($backgroundBrush, $background)
+    }
 
     $screen = New-RoundedPath ($size * 0.22) ($size * 0.245) ($size * 0.56) ($size * 0.405) ($size * 0.055)
     $screenBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 255, 254, 250))
@@ -42,10 +47,15 @@ function New-PresentaIcon([int]$size, [string]$path) {
 
     $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
     $laserBrush.Dispose(); $standPen.Dispose(); $violetBrush.Dispose(); $screenBrush.Dispose(); $backgroundBrush.Dispose()
-    $inner.Dispose(); $screen.Dispose(); $background.Dispose(); $graphics.Dispose(); $bitmap.Dispose()
+    $inner.Dispose(); $screen.Dispose()
+    if ($null -ne $background) { $background.Dispose() }
+    $graphics.Dispose(); $bitmap.Dispose()
 }
 
 $publicDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) "public"
 New-PresentaIcon 192 (Join-Path $publicDirectory "icon-192.png")
 New-PresentaIcon 512 (Join-Path $publicDirectory "icon-512.png")
+New-PresentaIcon 192 (Join-Path $publicDirectory "icon-maskable-192.png") $true
+New-PresentaIcon 512 (Join-Path $publicDirectory "icon-maskable-512.png") $true
+New-PresentaIcon 180 (Join-Path $publicDirectory "apple-touch-icon.png") $true
 Write-Output "PWA icons generated."
