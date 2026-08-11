@@ -6,6 +6,6 @@
 [[redirects]]
   from = "/*"
   to = "https://presenta-remoto.fran-hrdz93.chatgpt.site/:splat"
-  status = 302
+  status = 200
   force = true
 
