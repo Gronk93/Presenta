@@ -382,7 +382,8 @@ namespace PresentaBridge
         private double targetPointerY = .5;
         private bool laserActive;
         private bool pointerVisible;
-        private bool blackoutActive;
+        private bool freezeActive;
+        private Bitmap freezeFrame;
         private string boardMode = "transparent";
         private readonly List<DrawingStroke> drawingStrokes = new List<DrawingStroke>();
         private readonly System.Windows.Forms.Timer pointerIdleTimer;
@@ -426,7 +427,6 @@ namespace PresentaBridge
                 safetyTimer.Stop();
                 pointerVisible = false;
                 laserActive = false;
-                blackoutActive = false;
                 Invalidate();
             };
         }
@@ -452,6 +452,8 @@ namespace PresentaBridge
             {
                 Screen[] screens = Screen.AllScreens;
                 if (index < 0 || index >= screens.Length) index = 0;
+                ReleaseFreezeFrame();
+                freezeActive = false;
                 Bounds = screens[index].Bounds;
                 EnsureTopmostCore();
                 Invalidate();
@@ -513,14 +515,64 @@ namespace PresentaBridge
             });
         }
 
-        public void SetBlackout(bool active)
+        public void SetFreeze(bool active)
         {
             RunOnUi(delegate
             {
-                blackoutActive = active;
+                if (active && !freezeActive)
+                {
+                    Bitmap captured = CaptureSelectedScreen();
+                    if (captured != null)
+                    {
+                        ReleaseFreezeFrame();
+                        freezeFrame = captured;
+                        freezeActive = true;
+                    }
+                }
+                else if (!active)
+                {
+                    freezeActive = false;
+                    ReleaseFreezeFrame();
+                }
                 EnsureTopmostCore();
                 Invalidate();
             });
+        }
+
+        private Bitmap CaptureSelectedScreen()
+        {
+            Bitmap captured = null;
+            bool wasVisible = Visible;
+            try
+            {
+                if (wasVisible)
+                {
+                    Hide();
+                    Application.DoEvents();
+                }
+                captured = new Bitmap(Math.Max(1, Bounds.Width), Math.Max(1, Bounds.Height));
+                using (Graphics graphics = Graphics.FromImage(captured))
+                {
+                    graphics.CopyFromScreen(Bounds.Location, Point.Empty, Bounds.Size, CopyPixelOperation.SourceCopy);
+                }
+                return captured;
+            }
+            catch
+            {
+                if (captured != null) captured.Dispose();
+                return null;
+            }
+            finally
+            {
+                if (wasVisible) EnsureTopmostCore();
+            }
+        }
+
+        private void ReleaseFreezeFrame()
+        {
+            if (freezeFrame == null) return;
+            freezeFrame.Dispose();
+            freezeFrame = null;
         }
 
         public void SetBoard(string mode)
@@ -604,32 +656,26 @@ namespace PresentaBridge
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            if (blackoutActive)
-            {
-                e.Graphics.Clear(Color.Black);
-                using (var font = new Font("Segoe UI", 13f))
-                using (var brush = new SolidBrush(Color.FromArgb(150, 255, 255, 255)))
-                {
-                    const string text = "Pantalla en pausa";
-                    SizeF size = e.Graphics.MeasureString(text, font);
-                    e.Graphics.DrawString(text, font, brush, (ClientSize.Width - size.Width) / 2, (ClientSize.Height - size.Height) / 2);
-                }
-                return;
-            }
-
-            if (boardMode == "white") e.Graphics.Clear(Color.FromArgb(255, 254, 250));
+            if (freezeActive && freezeFrame != null) e.Graphics.DrawImage(freezeFrame, ClientRectangle);
+            else if (boardMode == "white") e.Graphics.Clear(Color.FromArgb(255, 254, 250));
             else if (boardMode == "black") e.Graphics.Clear(Color.FromArgb(16, 19, 24));
             else e.Graphics.Clear(Color.Fuchsia);
             DrawAnnotations(e.Graphics);
             if (!laserActive || !pointerVisible) return;
             float x = (float)(pointerX * ClientSize.Width);
             float y = (float)(pointerY * ClientSize.Height);
+            using (var halo = new SolidBrush(Color.FromArgb(55, 235, 25, 45)))
             using (var core = new SolidBrush(Color.FromArgb(255, 235, 25, 45)))
-            using (var white = new Pen(Color.White, 2f))
             {
-                e.Graphics.FillEllipse(core, x - 6, y - 6, 12, 12);
-                e.Graphics.DrawEllipse(white, x - 7, y - 7, 14, 14);
+                e.Graphics.FillEllipse(halo, x - 13, y - 13, 26, 26);
+                e.Graphics.FillEllipse(core, x - 5, y - 5, 10, 10);
             }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) ReleaseFreezeFrame();
+            base.Dispose(disposing);
         }
 
         private void DrawAnnotations(Graphics graphics)
@@ -707,7 +753,9 @@ namespace PresentaBridge
             }
             if (type == "blackout")
             {
-                overlay.SetBlackout(Convert.ToBoolean(command["active"]));
+                // Conservamos el nombre del mensaje para que la PWA siga siendo
+                // compatible con instalaciones anteriores del Bridge.
+                overlay.SetFreeze(Convert.ToBoolean(command["active"]));
                 return;
             }
             if (type == "slide")
@@ -870,7 +918,7 @@ namespace PresentaBridge
                 string deviceName = auth.ContainsKey("name") ? Convert.ToString(auth["name"]) : candidate.Name;
                 string platform = auth.ContainsKey("platform") ? Convert.ToString(auth["platform"]) : "Android";
                 if (string.IsNullOrWhiteSpace(deviceName)) deviceName = candidate.Name;
-                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.7.0\"}");
+                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.8.0\"}");
                 SavePreferredAddress(candidate.Address);
                 deviceStatus(deviceName, platform + " · Bluetooth");
                 status("Bluetooth conectado · " + deviceName, true);
@@ -1125,7 +1173,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.7.0\",\"ready\":true,\"bluetooth\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.8.0\",\"ready\":true,\"bluetooth\":true}");
                     return;
                 }
 
