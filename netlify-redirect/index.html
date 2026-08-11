@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Abriendo Presenta…</title>
+    <style>
+      :root { color-scheme: light; font-family: Arial, sans-serif; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #f3f0e8; color: #171c25; }
+      main { width: min(100% - 40px, 420px); text-align: center; }
+      span { display: inline-block; width: 34px; height: 34px; border: 4px solid #d7d0fb; border-top-color: #6757d9; border-radius: 50%; animation: turn .8s linear infinite; }
+      p { color: #6e716f; line-height: 1.5; }
+      a { color: #4f42bd; font-weight: 700; }
+      @keyframes turn { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { span { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span aria-hidden="true"></span>
+      <h1>Abriendo Presenta</h1>
+      <p>Si la aplicación no se abre automáticamente, utiliza el enlace.</p>
+      <a id="presenta-link" href="https://presenta-remoto.fran-hrdz93.chatgpt.site/">Continuar a Presenta</a>
+    </main>
+    <script>
+      const destination = new URL(window.location.pathname + window.location.search + window.location.hash, "https://presenta-remoto.fran-hrdz93.chatgpt.site");
+      document.getElementById("presenta-link").href = destination.href;
+      window.location.replace(destination.href);
+    </script>
+  </body>
+</html>
