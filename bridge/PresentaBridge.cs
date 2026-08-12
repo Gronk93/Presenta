@@ -918,7 +918,7 @@ namespace PresentaBridge
                 string deviceName = auth.ContainsKey("name") ? Convert.ToString(auth["name"]) : candidate.Name;
                 string platform = auth.ContainsKey("platform") ? Convert.ToString(auth["platform"]) : "Android";
                 if (string.IsNullOrWhiteSpace(deviceName)) deviceName = candidate.Name;
-                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.8.0\"}");
+                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.8.1\"}");
                 SavePreferredAddress(candidate.Address);
                 deviceStatus(deviceName, platform + " · Bluetooth");
                 status("Bluetooth conectado · " + deviceName, true);
@@ -1173,7 +1173,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.8.0\",\"ready\":true,\"bluetooth\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.8.1\",\"ready\":true,\"bluetooth\":true}");
                     return;
                 }
 
@@ -1207,6 +1207,7 @@ namespace PresentaBridge
         {
             return string.IsNullOrEmpty(origin)
                 || origin == "https://presenta-remoto.fran-hrdz93.chatgpt.site"
+                || origin == "https://guia-presenta.netlify.app"
                 || origin == "http://localhost:3000"
                 || origin == "http://127.0.0.1:3000";
         }

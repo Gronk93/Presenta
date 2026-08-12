@@ -1032,8 +1032,8 @@ export default function Home() {
             <label htmlFor="bridge-code">Contraseña del Bridge</label>
             <input id="bridge-code" inputMode="text" autoCapitalize="characters" autoComplete="off" value={formatBridgePassword(bridgeInput)} onChange={(event) => setBridgeInput(normalizeBridgePassword(event.target.value))} placeholder="ABCD EFGH" autoFocus />
             <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
-            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe?v=080" download>Descargar Presenta Bridge 0.8 para Windows</a>
-            <small>El Bridge es opcional y sólo se usa para controlar directamente otras aplicaciones de Windows. La conexión entre las dos PWA funciona por Internet sin él.</small>
+            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe?v=081" download>Descargar Presenta Bridge 0.8.1 para Windows</a>
+            <small>Si ya instalaste la versión 0.8, instala 0.8.1 encima: el instalador cierra la versión anterior y conserva tu contraseña. El Bridge sólo se usa para controlar directamente otras aplicaciones de Windows.</small>
           </section>
         </div>
       )}
