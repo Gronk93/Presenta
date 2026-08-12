@@ -279,7 +279,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(103, 87, 217
 .deck-visual span { flex: 1; height: 40%; border-radius: 8px 8px 2px 2px; background: var(--violet-soft); }
 .deck-visual span:nth-child(2) { height: 68%; background: #bdb4ef; }
 .deck-visual span:nth-child(3) { height: 100%; background: var(--violet); }
-.laser-pointer { position: absolute; width: 10px; height: 10px; transform: translate(-50%,-50%); border: 0; border-radius: 50%; background: #eb192d; box-shadow: 0 0 0 7px rgba(235,25,45,.12), 0 0 18px rgba(235,25,45,.48); transition: left 45ms linear, top 45ms linear, opacity .16s; z-index: 5; }
+.laser-pointer { position: absolute; width: 10px; height: 10px; transform: translate(-50%,-50%); border: 0; border-radius: 50%; background: #eb192d; box-shadow: 0 0 0 7px rgba(235,25,45,.12), 0 0 18px rgba(235,25,45,.48); transition: opacity .16s; will-change: left, top; z-index: 5; }
 .laser-pointer.is-hidden { opacity: 0; }
 .freeze-badge { position: absolute; top: 16px; right: 16px; z-index: 7; padding: 7px 11px; border-radius: 999px; background: rgba(17,24,39,.82); color: white; font-size: .68rem; font-weight: 700; box-shadow: 0 8px 22px rgba(0,0,0,.22); }
 .receiver-hint { margin: 11px 0 0; color: var(--muted); font-size: .72rem; text-align: center; }

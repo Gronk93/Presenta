@@ -114,7 +114,12 @@ export default function Home() {
   const bridgeCodeRef = useRef("");
   const pointerFrame = useRef<number | null>(null);
   const pointerPositionRef = useRef({ x: 0.5, y: 0.5 });
-  const pendingPointer = useRef({ x: 0.5, y: 0.5, dx: 0, dy: 0 });
+  const pointerTargetRef = useRef({ x: 0.5, y: 0.5 });
+  const pointerSmoothingFrameRef = useRef<number | null>(null);
+  const pendingPointer = useRef({ x: 0.5, y: 0.5 });
+  const bridgePointerPendingRef = useRef<{ x: number; y: number } | null>(null);
+  const bridgePointerFrameRef = useRef<number | null>(null);
+  const bridgePointerInFlightRef = useRef(false);
   const lastPointerSample = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const activeStrokeIdRef = useRef<string | null>(null);
   const drawingCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -276,6 +281,64 @@ export default function Home() {
       });
   }, []);
 
+  const smoothPointerTo = useCallback((next: { x: number; y: number }) => {
+    pointerTargetRef.current = next;
+    if (pointerSmoothingFrameRef.current !== null) return;
+    let previousTime = performance.now();
+    const animate = (now: number) => {
+      const elapsed = Math.min(48, Math.max(1, now - previousTime));
+      previousTime = now;
+      const current = pointerPositionRef.current;
+      const target = pointerTargetRef.current;
+      const alpha = 1 - Math.exp(-elapsed / 38);
+      const updated = {
+        x: current.x + (target.x - current.x) * alpha,
+        y: current.y + (target.y - current.y) * alpha,
+      };
+      const remaining = Math.hypot(target.x - updated.x, target.y - updated.y);
+      if (remaining < 0.00015) {
+        pointerPositionRef.current = target;
+        setPointer(target);
+        pointerSmoothingFrameRef.current = null;
+        return;
+      }
+      pointerPositionRef.current = updated;
+      setPointer(updated);
+      pointerSmoothingFrameRef.current = window.requestAnimationFrame(animate);
+    };
+    pointerSmoothingFrameRef.current = window.requestAnimationFrame(animate);
+  }, []);
+
+  const scheduleBridgePointer = useCallback((next: { x: number; y: number }) => {
+    bridgePointerPendingRef.current = next;
+    if (bridgePointerInFlightRef.current || bridgePointerFrameRef.current !== null) return;
+    const drain = () => {
+      const latest = bridgePointerPendingRef.current;
+      if (!latest || bridgePointerInFlightRef.current) return;
+      bridgePointerPendingRef.current = null;
+      bridgePointerInFlightRef.current = true;
+      void forwardToBridge({ type: "pointer", ...latest }).finally(() => {
+        bridgePointerInFlightRef.current = false;
+        if (bridgePointerPendingRef.current && bridgePointerFrameRef.current === null) {
+          bridgePointerFrameRef.current = window.requestAnimationFrame(() => {
+            bridgePointerFrameRef.current = null;
+            drain();
+          });
+        }
+      });
+    };
+    bridgePointerFrameRef.current = window.requestAnimationFrame(() => {
+      bridgePointerFrameRef.current = null;
+      drain();
+    });
+  }, [forwardToBridge]);
+
+  useEffect(() => () => {
+    if (pointerFrame.current !== null) window.cancelAnimationFrame(pointerFrame.current);
+    if (pointerSmoothingFrameRef.current !== null) window.cancelAnimationFrame(pointerSmoothingFrameRef.current);
+    if (bridgePointerFrameRef.current !== null) window.cancelAnimationFrame(bridgePointerFrameRef.current);
+  }, []);
+
   const applyDrawingMessage = useCallback((message: Extract<RemoteMessage, { type: "pen" | "board" | "clear-drawing" }>) => {
     if (message.type === "board") {
       boardModeRef.current = message.mode;
@@ -307,11 +370,10 @@ export default function Home() {
   const receiveMessage = useCallback((message: RemoteMessage) => {
     if (message.type === "pointer") {
       const next = { x: message.x, y: message.y };
-      pointerPositionRef.current = next;
-      setPointer(next);
-      // El Bridge recibe una posición absoluta. Así, dos pestañas abiertas o
-      // un reintento de red no suman el mismo desplazamiento dos veces.
-      if (!screenStreamRef.current) void forwardToBridge({ type: "pointer", ...next });
+      smoothPointerTo(next);
+      // Conserva sólo la posición más reciente y envíala en serie. Así una
+      // respuesta local atrasada no puede hacer retroceder el láser.
+      if (!screenStreamRef.current) scheduleBridgePointer(next);
     }
     if (message.type === "slide") setSlide((current) => Math.max(1, current + message.direction));
     if (message.type === "laser") setLaser(message.active);
@@ -321,7 +383,7 @@ export default function Home() {
     if (message.type === "pen" || message.type === "board" || message.type === "clear-drawing") applyDrawingMessage(message);
     const isVisualOverlay = message.type === "pointer" || message.type === "laser" || message.type === "blackout" || message.type === "pen" || message.type === "board" || message.type === "clear-drawing";
     if (message.type !== "pointer" && (!isVisualOverlay || !screenStreamRef.current)) void forwardToBridge(message);
-  }, [applyDrawingMessage, forwardToBridge]);
+  }, [applyDrawingMessage, forwardToBridge, scheduleBridgePointer, smoothPointerTo]);
 
   useEffect(() => {
     if (mode !== "receiver") return;
@@ -358,7 +420,7 @@ export default function Home() {
       const messages = relayQueueRef.current.splice(0, 60);
       if (!activeRoom || messages.length === 0) return;
       relayFlushingRef.current = true;
-      let retryDelay = 35;
+      let retryDelay = 8;
       try {
         const response = await fetch("/api/signal", {
           method: "POST",
@@ -452,7 +514,7 @@ export default function Home() {
         if (!stopped) {
           const retryDelay = consecutiveFailures > 0
             ? Math.min(3200, 300 * (2 ** Math.min(consecutiveFailures - 1, 4)))
-            : document.visibilityState === "visible" ? 60 : 1100;
+            : document.visibilityState === "visible" ? 32 : 1100;
           pollTimer = window.setTimeout(poll, retryDelay);
         }
       }
@@ -510,21 +572,16 @@ export default function Home() {
       relayQueueRef.current = relayQueueRef.current.filter((queued) => queued.type !== message.type);
     }
     if (message.type === "pointer") {
-      const pending = relayQueueRef.current[relayQueueRef.current.length - 1];
-      if (pending?.type === "pointer" && pending.relative && message.relative) {
-        pending.dx = (pending.dx ?? 0) + (message.dx ?? 0);
-        pending.dy = (pending.dy ?? 0) + (message.dy ?? 0);
-        pending.x = message.x;
-        pending.y = message.y;
-      } else {
-        relayQueueRef.current.push(message);
-      }
+      // Un movimiento atrasado ya no aporta información. Mantener sólo la
+      // posición absoluta más reciente evita colas y recorridos repetidos.
+      relayQueueRef.current = relayQueueRef.current.filter((queued) => queued.type !== "pointer");
+      relayQueueRef.current.push({ type: "pointer", x: message.x, y: message.y });
     } else {
       relayQueueRef.current.push(message);
     }
     const immediate = message.type === "slide" || message.type === "laser" || message.type === "blackout" || message.type === "presentation" || message.type === "board" || message.type === "clear-drawing";
     if (immediate) void flushRelayQueue();
-    else if (relayFlushTimerRef.current === null) relayFlushTimerRef.current = window.setTimeout(() => void flushRelayQueue(), 36);
+    else if (relayFlushTimerRef.current === null) relayFlushTimerRef.current = window.setTimeout(() => void flushRelayQueue(), 20);
   }, [flushRelayQueue, linkState]);
 
   const joinRoom = () => {
@@ -682,17 +739,13 @@ export default function Home() {
       y: Math.max(0, Math.min(1, pointerPositionRef.current.y + dy)),
     };
     pointerPositionRef.current = next;
+    pointerTargetRef.current = next;
     setPointer(next);
-    pendingPointer.current.x = next.x;
-    pendingPointer.current.y = next.y;
-    pendingPointer.current.dx += dx;
-    pendingPointer.current.dy += dy;
+    pendingPointer.current = next;
     if (pointerFrame.current === null) {
       pointerFrame.current = window.requestAnimationFrame(() => {
         const update = { ...pendingPointer.current };
-        pendingPointer.current.dx = 0;
-        pendingPointer.current.dy = 0;
-        sendRemote({ type: "pointer", ...update, relative: true });
+        sendRemote({ type: "pointer", ...update });
         pointerFrame.current = null;
       });
     }
@@ -1032,8 +1085,8 @@ export default function Home() {
             <label htmlFor="bridge-code">Contraseña del Bridge</label>
             <input id="bridge-code" inputMode="text" autoCapitalize="characters" autoComplete="off" value={formatBridgePassword(bridgeInput)} onChange={(event) => setBridgeInput(normalizeBridgePassword(event.target.value))} placeholder="ABCD EFGH" autoFocus />
             <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
-            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe?v=081" download>Descargar Presenta Bridge 0.8.1 para Windows</a>
-            <small>Si ya instalaste la versión 0.8, instala 0.8.1 encima: el instalador cierra la versión anterior y conserva tu contraseña. El Bridge sólo se usa para controlar directamente otras aplicaciones de Windows.</small>
+            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe?v=082" download>Descargar Presenta Bridge 0.8.2 para Windows</a>
+            <small>Instala 0.8.2 encima de tu versión actual para obtener el láser fluido; el instalador cierra la versión anterior y conserva tu contraseña.</small>
           </section>
         </div>
       )}

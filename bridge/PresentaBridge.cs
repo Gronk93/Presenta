@@ -386,7 +386,6 @@ namespace PresentaBridge
         private Bitmap freezeFrame;
         private string boardMode = "transparent";
         private readonly List<DrawingStroke> drawingStrokes = new List<DrawingStroke>();
-        private readonly System.Windows.Forms.Timer pointerIdleTimer;
         private readonly System.Windows.Forms.Timer pointerMotionTimer;
         private readonly System.Windows.Forms.Timer safetyTimer;
 
@@ -399,35 +398,31 @@ namespace PresentaBridge
             TransparencyKey = Color.Fuchsia;
             DoubleBuffered = true;
             Cursor = Cursors.Default;
-            pointerIdleTimer = new System.Windows.Forms.Timer { Interval = 1800 };
-            pointerIdleTimer.Tick += delegate
-            {
-                pointerIdleTimer.Stop();
-                pointerVisible = false;
-                Invalidate();
-            };
-            pointerMotionTimer = new System.Windows.Forms.Timer { Interval = 16 };
+            pointerMotionTimer = new System.Windows.Forms.Timer { Interval = 15 };
             pointerMotionTimer.Tick += delegate
             {
+                Rectangle previousBounds = PointerBounds(pointerX, pointerY);
                 double distanceX = targetPointerX - pointerX;
                 double distanceY = targetPointerY - pointerY;
-                pointerX = Math.Max(0, Math.Min(1, pointerX + distanceX * .56));
-                pointerY = Math.Max(0, Math.Min(1, pointerY + distanceY * .56));
-                if (Math.Abs(distanceX) < .00025 && Math.Abs(distanceY) < .00025)
+                pointerX = Math.Max(0, Math.Min(1, pointerX + distanceX * .34));
+                pointerY = Math.Max(0, Math.Min(1, pointerY + distanceY * .34));
+                if (Math.Abs(distanceX) < .00008 && Math.Abs(distanceY) < .00008)
                 {
                     pointerX = targetPointerX;
                     pointerY = targetPointerY;
                     pointerMotionTimer.Stop();
                 }
-                Invalidate();
+                if (laserActive && pointerVisible)
+                    Invalidate(Rectangle.Union(previousBounds, PointerBounds(pointerX, pointerY)));
             };
             safetyTimer = new System.Windows.Forms.Timer { Interval = 7000 };
             safetyTimer.Tick += delegate
             {
                 safetyTimer.Stop();
+                Rectangle pointerBounds = PointerBounds(pointerX, pointerY);
                 pointerVisible = false;
                 laserActive = false;
-                Invalidate();
+                Invalidate(pointerBounds);
             };
         }
 
@@ -499,19 +494,25 @@ namespace PresentaBridge
         {
             EnsureTopmostCore();
             pointerVisible = laserActive;
-            pointerIdleTimer.Stop();
-            pointerIdleTimer.Start();
             if (!pointerMotionTimer.Enabled) pointerMotionTimer.Start();
+        }
+
+        private Rectangle PointerBounds(double x, double y)
+        {
+            int pixelX = (int)Math.Round(x * ClientSize.Width);
+            int pixelY = (int)Math.Round(y * ClientSize.Height);
+            return new Rectangle(pixelX - 18, pixelY - 18, 36, 36);
         }
 
         public void SetLaser(bool active)
         {
             RunOnUi(delegate
             {
+                Rectangle pointerBounds = PointerBounds(pointerX, pointerY);
                 laserActive = active;
-                if (!active) pointerVisible = false;
+                pointerVisible = active;
                 EnsureTopmostCore();
-                Invalidate();
+                Invalidate(pointerBounds);
             });
         }
 
@@ -656,7 +657,7 @@ namespace PresentaBridge
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            if (freezeActive && freezeFrame != null) e.Graphics.DrawImage(freezeFrame, ClientRectangle);
+            if (freezeActive && freezeFrame != null) e.Graphics.DrawImage(freezeFrame, e.ClipRectangle, e.ClipRectangle, GraphicsUnit.Pixel);
             else if (boardMode == "white") e.Graphics.Clear(Color.FromArgb(255, 254, 250));
             else if (boardMode == "black") e.Graphics.Clear(Color.FromArgb(16, 19, 24));
             else e.Graphics.Clear(Color.Fuchsia);
@@ -674,7 +675,12 @@ namespace PresentaBridge
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) ReleaseFreezeFrame();
+            if (disposing)
+            {
+                pointerMotionTimer.Dispose();
+                safetyTimer.Dispose();
+                ReleaseFreezeFrame();
+            }
             base.Dispose(disposing);
         }
 
@@ -918,7 +924,7 @@ namespace PresentaBridge
                 string deviceName = auth.ContainsKey("name") ? Convert.ToString(auth["name"]) : candidate.Name;
                 string platform = auth.ContainsKey("platform") ? Convert.ToString(auth["platform"]) : "Android";
                 if (string.IsNullOrWhiteSpace(deviceName)) deviceName = candidate.Name;
-                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.8.1\"}");
+                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.8.2\"}");
                 SavePreferredAddress(candidate.Address);
                 deviceStatus(deviceName, platform + " · Bluetooth");
                 status("Bluetooth conectado · " + deviceName, true);
@@ -1173,7 +1179,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.8.1\",\"ready\":true,\"bluetooth\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.8.2\",\"ready\":true,\"bluetooth\":true}");
                     return;
                 }
 
