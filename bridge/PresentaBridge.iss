@@ -1,5 +1,5 @@
 #define MyAppName "Presenta Bridge"
-#define MyAppVersion "0.8.2"
+#define MyAppVersion "0.8.3"
 #define MyAppPublisher "Presenta"
 #define MyAppExeName "PresentaBridge.exe"
 

@@ -1085,8 +1085,8 @@ export default function Home() {
             <label htmlFor="bridge-code">Contraseña del Bridge</label>
             <input id="bridge-code" inputMode="text" autoCapitalize="characters" autoComplete="off" value={formatBridgePassword(bridgeInput)} onChange={(event) => setBridgeInput(normalizeBridgePassword(event.target.value))} placeholder="ABCD EFGH" autoFocus />
             <button className="primary-button" onClick={connectBridge}>Conectar Bridge <span>→</span></button>
-            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe?v=082" download>Descargar Presenta Bridge 0.8.2 para Windows</a>
-            <small>Instala 0.8.2 encima de tu versión actual para obtener el láser fluido; el instalador cierra la versión anterior y conserva tu contraseña.</small>
+            <a className="bridge-download" href="/downloads/PresentaBridgeSetup.exe?v=083" download>Descargar Presenta Bridge 0.8.3 para Windows</a>
+            <small>Instala 0.8.3 encima de tu versión actual: corrige la visibilidad del láser, cierra la versión anterior y conserva tu contraseña.</small>
           </section>
         </div>
       )}

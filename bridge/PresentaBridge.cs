@@ -401,7 +401,6 @@ namespace PresentaBridge
             pointerMotionTimer = new System.Windows.Forms.Timer { Interval = 15 };
             pointerMotionTimer.Tick += delegate
             {
-                Rectangle previousBounds = PointerBounds(pointerX, pointerY);
                 double distanceX = targetPointerX - pointerX;
                 double distanceY = targetPointerY - pointerY;
                 pointerX = Math.Max(0, Math.Min(1, pointerX + distanceX * .34));
@@ -412,17 +411,18 @@ namespace PresentaBridge
                     pointerY = targetPointerY;
                     pointerMotionTimer.Stop();
                 }
-                if (laserActive && pointerVisible)
-                    Invalidate(Rectangle.Union(previousBounds, PointerBounds(pointerX, pointerY)));
+                // Las ventanas con TransparencyKey necesitan recomponer el
+                // buffer completo; invalidar sólo el punto puede dejarlo
+                // totalmente transparente en algunos controladores gráficos.
+                if (laserActive && pointerVisible) Invalidate();
             };
             safetyTimer = new System.Windows.Forms.Timer { Interval = 7000 };
             safetyTimer.Tick += delegate
             {
                 safetyTimer.Stop();
-                Rectangle pointerBounds = PointerBounds(pointerX, pointerY);
                 pointerVisible = false;
                 laserActive = false;
-                Invalidate(pointerBounds);
+                Invalidate();
             };
         }
 
@@ -497,22 +497,15 @@ namespace PresentaBridge
             if (!pointerMotionTimer.Enabled) pointerMotionTimer.Start();
         }
 
-        private Rectangle PointerBounds(double x, double y)
-        {
-            int pixelX = (int)Math.Round(x * ClientSize.Width);
-            int pixelY = (int)Math.Round(y * ClientSize.Height);
-            return new Rectangle(pixelX - 18, pixelY - 18, 36, 36);
-        }
-
         public void SetLaser(bool active)
         {
             RunOnUi(delegate
             {
-                Rectangle pointerBounds = PointerBounds(pointerX, pointerY);
                 laserActive = active;
                 pointerVisible = active;
                 EnsureTopmostCore();
-                Invalidate(pointerBounds);
+                Invalidate();
+                Update();
             });
         }
 
@@ -657,7 +650,7 @@ namespace PresentaBridge
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            if (freezeActive && freezeFrame != null) e.Graphics.DrawImage(freezeFrame, e.ClipRectangle, e.ClipRectangle, GraphicsUnit.Pixel);
+            if (freezeActive && freezeFrame != null) e.Graphics.DrawImage(freezeFrame, ClientRectangle);
             else if (boardMode == "white") e.Graphics.Clear(Color.FromArgb(255, 254, 250));
             else if (boardMode == "black") e.Graphics.Clear(Color.FromArgb(16, 19, 24));
             else e.Graphics.Clear(Color.Fuchsia);
@@ -924,7 +917,7 @@ namespace PresentaBridge
                 string deviceName = auth.ContainsKey("name") ? Convert.ToString(auth["name"]) : candidate.Name;
                 string platform = auth.ContainsKey("platform") ? Convert.ToString(auth["platform"]) : "Android";
                 if (string.IsNullOrWhiteSpace(deviceName)) deviceName = candidate.Name;
-                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.8.2\"}");
+                writer.WriteLine("{\"type\":\"auth\",\"ok\":true,\"version\":\"0.8.3\"}");
                 SavePreferredAddress(candidate.Address);
                 deviceStatus(deviceName, platform + " · Bluetooth");
                 status("Bluetooth conectado · " + deviceName, true);
@@ -1179,7 +1172,7 @@ namespace PresentaBridge
 
                 if (context.Request.HttpMethod == "GET" && context.Request.Url.AbsolutePath == "/health")
                 {
-                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.8.2\",\"ready\":true,\"bluetooth\":true}");
+                    WriteJson(context, 200, "{\"name\":\"Presenta Bridge\",\"version\":\"0.8.3\",\"ready\":true,\"bluetooth\":true}");
                     return;
                 }
 
